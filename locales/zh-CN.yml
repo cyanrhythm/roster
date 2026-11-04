@@ -1,0 +1,151 @@
+# 界面文案。键是扁平的，值里 %{name} 会被 tf() 换掉。
+#
+# 这一份是原文：新增字符串先写这里，再补 en.yml。两边键必须一一对应，
+# i18n::tests 会盯着这件事。
+
+app.title: "DST 会话管理器"
+
+header.sessions: "%{count} 个会话"
+header.shown: "显示 %{count}"
+header.filter: "筛选: %{query}"
+header.typing: "（输入中）"
+header.load_errors: "%{count} 个加载错误"
+header.root: "根目录: %{roots}"
+header.language: "语言: %{label}"
+header.language_auto: "语言: %{label}（跟随系统）"
+
+list.title: "会话 (%{count})"
+list.open_badge: " · 打开"
+
+detail.title: "详情"
+detail.empty: "没有选中的会话"
+detail.id: "id"
+detail.title_label: "标题"
+detail.workspace: "工作区"
+detail.created: "创建时间"
+detail.updated: "更新时间"
+detail.size: "大小"
+detail.log: "日志"
+detail.parent: "父会话"
+detail.preset: "预设"
+detail.model: "模型"
+detail.title_source: "标题来源"
+detail.dir: "目录"
+detail.log_value: "%{name} · %{encoding} · %{count} 帧"
+detail.encoding.zstd: "zstd"
+detail.encoding.plain: "明文"
+detail.mounted: "正被运行中的 dsh-tui 占用（pid %{pid}）。"
+detail.mounted_hint: "删除或移动会话前请先关闭它。"
+
+title_source.renamed: "已重命名"
+title_source.auto: "自动生成"
+title_source.log: "日志事件"
+title_source.prompt: "首条消息"
+title_source.fallback: "回退"
+
+common.untitled: "（无标题）"
+common.unknown: "未知"
+
+status.hint.normal: "↑↓/jk 移动  / 筛选  r 重命名  w 工作区  d 删除  R 刷新  L 语言  ? 帮助  q 退出"
+status.hint.filter: "输入以筛选  Enter 应用  Esc 取消"
+status.hint.rename: "Enter 保存  Esc 取消"
+status.hint.workspace: "Enter 应用  Esc 取消  Ctrl+U 清空"
+status.hint.confirm_delete: "y 确认  n/Esc 取消"
+status.hint.help: "按任意键关闭帮助"
+
+msg.reloaded: "已刷新"
+msg.load_errors: "%{count} 个会话无法加载（用 --list 查看详情）"
+msg.renamed: "已重命名为“%{title}”"
+msg.workspace_changed: "工作区已改为 %{cwd}"
+msg.deleted: "已移入回收站：%{path}"
+msg.rename_failed: "重命名失败：%{error}"
+msg.workspace_failed: "修改工作区失败：%{error}"
+msg.delete_failed: "删除失败：%{error}"
+msg.language: "语言：%{label}"
+msg.language_auto: "语言：%{label}（跟随系统）"
+
+popup.filter.title: "筛选"
+popup.filter.hint: "Enter 应用 · Esc 取消"
+popup.rename.title: "重命名会话"
+popup.rename.hint: "Enter 保存 · Esc 取消"
+popup.workspace.title: "修改工作区（cwd）"
+popup.workspace.hint: "Enter 应用 · Esc 取消 · Ctrl+U 清空"
+popup.workspace.hint_open: "Enter 应用 · Esc 取消 · 警告：会话正在使用中"
+popup.delete.title: "删除会话"
+popup.delete.mounted: "警告：正被运行中的进程 %{pid} 占用"
+popup.delete.children: "警告：%{count} 个子会话将失去父会话。"
+popup.delete.body: "会话目录会被移动到回收站。"
+popup.delete.confirm: "按 y 确认，n 或 Esc 取消。"
+
+help.title: "帮助"
+help.nav: "导航"
+help.nav_move: "  ↑/k, ↓/j    移动选择"
+help.nav_top: "  g / G        顶部 / 底部"
+help.nav_page: "  PgUp/PgDn    移动 10 行"
+help.nav_filter: "  /            按标题、路径或 id 筛选"
+help.actions: "操作"
+help.action_rename: "  r            重命名会话（追加 session/title）"
+help.action_workspace: "  w            修改工作区（会话 cwd）"
+help.action_delete: "  d            删除会话（移入回收站）"
+help.action_reload: "  R            从磁盘刷新"
+help.action_language: "  L            切换语言（跟随系统 / 中文 / English）"
+help.action_quit: "  q / Esc      退出"
+help.footer: "直接修改 dsh-tui / DST 存储；重启 dst 后生效。"
+
+time.just_now: "刚刚"
+time.minutes_ago: "%{count} 分钟前"
+time.hours_ago: "%{count} 小时前"
+time.days_ago: "%{count} 天前"
+
+cli.help: |
+  dst-session-manager %{version}
+
+  管理 dsh-tui（DST）会话日志。
+
+  用法：
+      dst-session-manager [选项]
+      dst-session-manager --list [--json] [选项]
+      dst-session-manager --rename <id> <标题> [选项]
+      dst-session-manager --delete <id> [选项]
+      dst-session-manager --set-cwd <id> <绝对路径> [选项]
+
+  选项：
+      --dsh-home <路径>       DSH 主目录（默认 $DSH_HOME 或 ~/.dsh）
+      --data-dir <路径>       dsh-tui 数据目录（默认 ~/.dsh-tui）
+      --sessions-root <路径>  额外的会话根目录（可重复）
+      --lang <auto|zh-CN|en>  界面语言（默认跟随系统或上次选择）
+      --list                  列出会话后退出
+      --json                  与 --list 连用，输出 JSON
+      --rename <id> <标题>    追加用户标题事件
+      --delete <id>           将会话目录移入回收站
+      --set-cwd <id> <路径>   修改会话工作区（header cwd + 目录）
+      -h, --help              显示本帮助
+
+  按键：
+      ↑↓/jk 移动   / 筛选   r 重命名   w 工作区
+      d 删除       R 刷新   L 语言     ? 帮助     q 退出
+
+  会话 id 可以只写无歧义的前缀。
+
+err.title_empty: "标题不能为空"
+err.cwd_empty: "工作区路径不能为空"
+err.cwd_absolute: "工作区必须是绝对路径"
+err.target_exists: "目标会话目录已存在：%{path}"
+err.trash_move: "无法把会话移入回收站（是否正在运行？）：%{error}"
+err.dir_move: "无法移动会话目录：%{error}"
+err.empty_log: "会话日志为空"
+err.empty_header: "会话头部为空"
+err.header_frame: "第一帧不是单独一行头部"
+err.invalid_target: "目标目录无效"
+err.no_log: "找不到会话日志"
+err.no_cwd: "会话头部缺少 cwd"
+
+cli.warning: "警告：%{error}"
+cli.renamed: "已重命名 %{id} -> %{title}"
+cli.moved: "已移动 %{id} 到 %{cwd}"
+cli.trashed: "已把 %{id} 移动到 %{path}"
+cli.err.unknown_argument: "未知参数：%{arg}"
+cli.err.missing_value: "参数 %{name} 缺少值"
+cli.err.no_session: "找不到匹配 %{needle} 的会话"
+cli.err.ambiguous: "会话 id 前缀 %{needle} 有歧义（%{count} 个匹配）"
+cli.err.invalid_language: "不支持的语言：%{value}（可用：auto、zh-CN、en）"

@@ -1,0 +1,149 @@
+# UI copy in English. Keys and %{placeholders} must match zh-CN.yml exactly —
+# i18n::tests compares the two tables.
+
+app.title: "DST Session Manager"
+
+header.sessions: "%{count} sessions"
+header.shown: "%{count} shown"
+header.filter: "filter: %{query}"
+header.typing: "(typing)"
+header.load_errors: "%{count} load errors"
+header.root: "root: %{roots}"
+header.language: "lang: %{label}"
+header.language_auto: "lang: %{label} (system)"
+
+list.title: "Sessions (%{count})"
+list.open_badge: " · open"
+
+detail.title: "Details"
+detail.empty: "No session selected"
+detail.id: "id"
+detail.title_label: "title"
+detail.workspace: "workspace"
+detail.created: "created"
+detail.updated: "updated"
+detail.size: "size"
+detail.log: "log"
+detail.parent: "parent"
+detail.preset: "preset"
+detail.model: "model"
+detail.title_source: "title source"
+detail.dir: "dir"
+detail.log_value: "%{name} · %{encoding} · %{count} frames"
+detail.encoding.zstd: "zstd"
+detail.encoding.plain: "plain"
+detail.mounted: "Mounted by a running dsh-tui (pid %{pid})."
+detail.mounted_hint: "Close it before deleting or moving this session."
+
+title_source.renamed: "renamed"
+title_source.auto: "auto"
+title_source.log: "log event"
+title_source.prompt: "first prompt"
+title_source.fallback: "fallback"
+
+common.untitled: "(untitled)"
+common.unknown: "unknown"
+
+status.hint.normal: "↑↓/jk move  / filter  r rename  w workspace  d delete  R reload  L language  ? help  q quit"
+status.hint.filter: "type to filter  Enter apply  Esc cancel"
+status.hint.rename: "Enter save  Esc cancel"
+status.hint.workspace: "Enter apply  Esc cancel  Ctrl+U clear"
+status.hint.confirm_delete: "y confirm  n/Esc cancel"
+status.hint.help: "any key closes help"
+
+msg.reloaded: "reloaded"
+msg.load_errors: "%{count} session(s) could not be loaded (see --list for details)"
+msg.renamed: "renamed to “%{title}”"
+msg.workspace_changed: "workspace changed to %{cwd}"
+msg.deleted: "moved to trash: %{path}"
+msg.rename_failed: "rename failed: %{error}"
+msg.workspace_failed: "workspace change failed: %{error}"
+msg.delete_failed: "delete failed: %{error}"
+msg.language: "language: %{label}"
+msg.language_auto: "language: %{label} (system)"
+
+popup.filter.title: "Filter"
+popup.filter.hint: "Enter apply · Esc cancel"
+popup.rename.title: "Rename session"
+popup.rename.hint: "Enter save · Esc cancel"
+popup.workspace.title: "Change workspace (cwd)"
+popup.workspace.hint: "Enter apply · Esc cancel · Ctrl+U clear"
+popup.workspace.hint_open: "Enter apply · Esc cancel · WARNING: session is open"
+popup.delete.title: "Delete session"
+popup.delete.mounted: "Warning: mounted by running process %{pid}"
+popup.delete.children: "Warning: %{count} child session(s) will be orphaned."
+popup.delete.body: "The session directory will be moved to the trash folder."
+popup.delete.confirm: "Press y to confirm, n or Esc to cancel."
+
+help.title: "Help"
+help.nav: "Navigation"
+help.nav_move: "  ↑/k, ↓/j    move selection"
+help.nav_top: "  g / G        top / bottom"
+help.nav_page: "  PgUp/PgDn    move by 10"
+help.nav_filter: "  /            filter by title, path or id"
+help.actions: "Actions"
+help.action_rename: "  r            rename session (append session/title)"
+help.action_workspace: "  w            change workspace (session cwd)"
+help.action_delete: "  d            delete session (move to trash)"
+help.action_reload: "  R            reload from disk"
+help.action_language: "  L            switch language (system / 中文 / English)"
+help.action_quit: "  q / Esc      quit"
+help.footer: "dsh-tui / DST storage is modified directly; restart dst to see changes."
+
+time.just_now: "just now"
+time.minutes_ago: "%{count} min ago"
+time.hours_ago: "%{count} h ago"
+time.days_ago: "%{count} d ago"
+
+cli.help: |
+  dst-session-manager %{version}
+
+  Manage dsh-tui (DST) session logs.
+
+  USAGE:
+      dst-session-manager [OPTIONS]
+      dst-session-manager --list [--json] [OPTIONS]
+      dst-session-manager --rename <id> <title> [OPTIONS]
+      dst-session-manager --delete <id> [OPTIONS]
+      dst-session-manager --set-cwd <id> <absolute-path> [OPTIONS]
+
+  OPTIONS:
+      --dsh-home <PATH>       DSH home (default: $DSH_HOME or ~/.dsh)
+      --data-dir <PATH>       dsh-tui data dir (default: ~/.dsh-tui)
+      --sessions-root <PATH>  Extra session root (repeatable)
+      --lang <auto|zh-CN|en>  UI language (default: system or last choice)
+      --list                  Print sessions and exit
+      --json                  With --list, print JSON
+      --rename <id> <title>   Append a user title event
+      --delete <id>           Move the session directory to the trash
+      --set-cwd <id> <path>   Change the session workspace (header cwd + directory)
+      -h, --help              Show this help
+
+  TUI KEYS:
+      ↑↓/jk move   / filter   r rename   w workspace
+      d delete     R reload   L language ? help   q quit
+
+  Session ids may be abbreviated to an unambiguous prefix.
+
+err.title_empty: "title cannot be empty"
+err.cwd_empty: "workspace path cannot be empty"
+err.cwd_absolute: "workspace must be an absolute path"
+err.target_exists: "target session directory already exists: %{path}"
+err.trash_move: "cannot move session to trash (is it open?): %{error}"
+err.dir_move: "cannot move session directory: %{error}"
+err.empty_log: "empty session log"
+err.empty_header: "header frame is empty"
+err.header_frame: "first frame is not exactly one header line"
+err.invalid_target: "invalid target directory"
+err.no_log: "no session log found"
+err.no_cwd: "session header has no cwd"
+
+cli.warning: "warning: %{error}"
+cli.renamed: "renamed %{id} -> %{title}"
+cli.moved: "moved %{id} to %{cwd}"
+cli.trashed: "moved %{id} to %{path}"
+cli.err.unknown_argument: "unknown argument: %{arg}"
+cli.err.missing_value: "missing value for %{name}"
+cli.err.no_session: "no session matching %{needle}"
+cli.err.ambiguous: "ambiguous session id prefix %{needle} (%{count} matches)"
+cli.err.invalid_language: "unsupported language: %{value} (use auto, zh-CN or en)"
