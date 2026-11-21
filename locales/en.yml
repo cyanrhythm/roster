@@ -65,14 +65,14 @@ status.hint.normal: "↑↓/jk move  / filter  s source  r rename  w workspace  
 status.hint.filter: "type to filter  Enter apply  Esc cancel"
 status.hint.rename: "Enter save  Esc cancel"
 status.hint.workspace: "Enter apply  Esc cancel  Ctrl+U clear"
-status.hint.confirm_delete: "y confirm  n/Esc cancel"
+status.hint.confirm_delete: "y delete for good  n/Esc cancel"
 status.hint.help: "any key closes help"
 
 msg.reloaded: "reloaded"
 msg.load_errors: "%{count} session(s) could not be loaded (see --list for details)"
 msg.renamed: "renamed to “%{title}”"
 msg.workspace_changed: "workspace changed to %{cwd}"
-msg.deleted: "moved to trash: %{path}"
+msg.deleted: "deleted “%{title}”"
 msg.rename_failed: "rename failed: %{error}"
 msg.workspace_failed: "workspace change failed: %{error}"
 msg.delete_failed: "delete failed: %{error}"
@@ -90,8 +90,8 @@ popup.workspace.hint_open: "Enter apply · Esc cancel · WARNING: session is ope
 popup.delete.title: "Delete session"
 popup.delete.mounted: "Warning: mounted by running process %{pid}"
 popup.delete.children: "Warning: %{count} child session(s) will be orphaned."
-popup.delete.body: "The session directory will be moved to the trash folder."
-popup.delete.confirm: "Press y to confirm, n or Esc to cancel."
+popup.delete.body: "The session will be deleted permanently. This cannot be undone."
+popup.delete.confirm: "Press y to delete permanently, n or Esc to cancel."
 
 help.title: "Help"
 help.nav: "Navigation"
@@ -102,7 +102,7 @@ help.nav_filter: "  /            filter by title, path or id"
 help.actions: "Actions"
 help.action_rename: "  r            rename session (append session/title)"
 help.action_workspace: "  w            change workspace (session cwd)"
-help.action_delete: "  d            delete session (move to trash)"
+help.action_delete: "  d            delete session (permanent, cannot be undone)"
 help.action_reload: "  R            reload from disk"
 help.action_source: "  s            switch source (all / DST / opencode)"
 help.action_language: "  L            switch language (system / 中文 / English)"
@@ -136,7 +136,7 @@ cli.help: |
       --list                  Print sessions and exit
       --json                  With --list, print JSON
       --rename <id> <title>   Rename a session
-      --delete <id>           Delete a session (moved to the trash)
+      --delete <id>           Delete a session permanently
       --set-cwd <id> <path>   Change a session's workspace
       -h, --help              Show this help
 
@@ -150,7 +150,7 @@ err.title_empty: "title cannot be empty"
 err.cwd_empty: "workspace path cannot be empty"
 err.cwd_absolute: "workspace must be an absolute path"
 err.target_exists: "target session directory already exists: %{path}"
-err.trash_move: "cannot move session to trash (is it open?): %{error}"
+err.delete_dir: "cannot delete session directory (is it open?): %{error}"
 err.dir_move: "cannot move session directory: %{error}"
 err.rollback_failed: "session directory now sits at %{path}: writing the new header failed and it could not be moved back: %{error}"
 err.empty_log: "empty session log"
@@ -166,7 +166,7 @@ err.wrong_source: "this operation does not apply to this source"
 cli.warning: "warning: %{error}"
 cli.renamed: "renamed %{id} -> %{title}"
 cli.moved: "moved %{id} to %{cwd}"
-cli.trashed: "moved %{id} to %{path}"
+cli.deleted: "deleted %{id}"
 cli.err.unknown_argument: "unknown argument: %{arg}"
 cli.err.missing_value: "missing value for %{name}"
 cli.err.no_session: "no session matching %{needle}"

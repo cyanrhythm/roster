@@ -6,13 +6,12 @@ use std::path::PathBuf;
 pub struct Paths {
     /// DSH home: session logs live in `sessions/`, dsh-tui state in `storages/`.
     pub dsh_home: PathBuf,
-    /// dsh-tui data directory: our own preferences, caches and trash live here.
+    /// dsh-tui data directory: our own preferences and caches live here.
     pub data_dir: PathBuf,
     /// Every directory scanned for DST session logs.
     pub session_roots: Vec<PathBuf>,
     /// Every opencode data directory that may hold an `opencode.db`.
     pub opencode_dirs: Vec<PathBuf>,
-    pub trash_dir: PathBuf,
 }
 
 impl Paths {
@@ -72,14 +71,11 @@ impl Paths {
             }
         });
 
-        let trash_dir = data_dir.join("roster-trash");
-
         Self {
             dsh_home,
             data_dir,
             session_roots: roots,
             opencode_dirs: data_dirs,
-            trash_dir,
         }
     }
 }

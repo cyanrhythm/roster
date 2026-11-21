@@ -93,14 +93,8 @@ fn main() -> Result<()> {
     if let Some(id) = cli.delete {
         let result = store::load(&paths);
         let session = find_session(&result.sessions, &id)?;
-        let trash = mutate::delete(&paths, session)?;
-        println!(
-            "{}",
-            i18n::tf(
-                "cli.trashed",
-                &[("id", &session.id), ("path", &trash.display().to_string())],
-            )
-        );
+        mutate::delete(&paths, session)?;
+        println!("{}", i18n::tf("cli.deleted", &[("id", &session.id)]));
         return Ok(());
     }
 

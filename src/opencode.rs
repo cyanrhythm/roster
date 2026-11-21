@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
@@ -23,7 +23,6 @@ use serde_json::{json, Value};
 
 use crate::i18n::t;
 use crate::mutate::now_ms;
-use crate::paths::Paths;
 use crate::store::{LoadResult, Location, Session};
 
 const DB_NAME: &str = "opencode.db";
@@ -315,21 +314,10 @@ pub fn change_workspace(session: &Session, new_cwd: &str) -> Result<String> {
     Ok(new_dir)
 }
 
-/// Deletes the session after dumping everything about it into the trash, so a
-/// mistake is still recoverable by hand.
-pub fn delete(paths: &Paths, session: &Session) -> Result<PathBuf> {
-    let (db, project_id, _) = expect(session)?;
-    let export = export_session(db, session)?;
-
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let target = paths
-        .trash_dir
-        .join(stamp)
-        .join("opencode")
-        .join(sanitize_component(project_id))
-        .join(format!("{}.json", sanitize_component(&session.id)));
-    let bytes = serde_json::to_vec_pretty(&export)?;
-    crate::cache::write_atomic(&target, &bytes)?;
+/// Deletes the session and everything hanging off it. There is no copy kept:
+/// the confirmation dialog is the only safety net.
+pub fn delete(session: &Session) -> Result<()> {
+    let (db, _, _) = expect(session)?;
 
     let mut conn = open_for_write(db)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -359,59 +347,7 @@ pub fn delete(paths: &Paths, session: &Session) -> Result<PathBuf> {
             .join(format!("{}.json", session.id));
         let _ = fs::remove_file(artifact);
     }
-    Ok(target)
-}
-
-fn export_session(db: &Path, session: &Session) -> Result<Value> {
-    let conn = connect(db, true)?;
-    Ok(json!({
-        "format": "roster/opencode-session",
-        "identity": { "id": session.id, "cwd": session.cwd, "title": session.title },
-        "session": export_table(&conn, "SELECT * FROM session WHERE id = ?1", &session.id),
-        "messages": export_table(&conn, "SELECT * FROM message WHERE session_id = ?1", &session.id),
-        "parts": export_table(&conn, "SELECT * FROM part WHERE session_id = ?1", &session.id),
-        "todos": export_table(&conn, "SELECT * FROM todo WHERE session_id = ?1", &session.id),
-        "events": export_table(
-            &conn,
-            "SELECT * FROM event WHERE aggregate_id = ?1 ORDER BY seq",
-            &session.id
-        ),
-    }))
-}
-
-/// Every row as a JSON object, with text cells that happen to hold JSON parsed
-/// so the export is actually readable.
-fn export_table(conn: &Connection, sql: &str, id: &str) -> Value {
-    let Ok(mut stmt) = conn.prepare(sql) else {
-        return json!([]);
-    };
-    let names: Vec<String> = stmt.column_names().map(|name| name.to_string()).collect();
-    let Ok(mut rows) = stmt.query(params![id]) else {
-        return json!([]);
-    };
-    let mut out = Vec::new();
-    while let Ok(Some(row)) = rows.next() {
-        let mut object = serde_json::Map::new();
-        for (index, name) in names.iter().enumerate() {
-            let value = match row.get_ref(index) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            let cell = match value {
-                rusqlite::types::ValueRef::Null => Value::Null,
-                rusqlite::types::ValueRef::Integer(number) => json!(number),
-                rusqlite::types::ValueRef::Real(number) => json!(number),
-                rusqlite::types::ValueRef::Text(bytes) => {
-                    let text = String::from_utf8_lossy(bytes);
-                    serde_json::from_str(&text).unwrap_or_else(|_| json!(text))
-                }
-                rusqlite::types::ValueRef::Blob(bytes) => json!(format!("<{} bytes>", bytes.len())),
-            };
-            object.insert(name.clone(), cell);
-        }
-        out.push(Value::Object(object));
-    }
-    Value::Array(out)
+    Ok(())
 }
 
 /// The newest `session.*` event of a session, which is the state opencode would
@@ -561,27 +497,11 @@ fn path_key(path: &str) -> String {
     key
 }
 
-fn sanitize_component(value: &str) -> String {
-    let cleaned: String = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if cleaned.is_empty() {
-        "session".to_string()
-    } else {
-        cleaned
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::path::PathBuf;
 
     use crate::store::Kind;
 
@@ -657,7 +577,7 @@ mod tests {
 
     #[test]
     fn reads_sessions_with_counts_and_model() {
-        let dir = std::env::temp_dir().join(format!("dstsm-oc-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("roster-oc-{}", uuid::Uuid::new_v4()));
         let db = fixture(&dir);
         let session = one(&db);
 
@@ -684,7 +604,7 @@ mod tests {
 
     #[test]
     fn rename_updates_the_row_and_appends_an_event() {
-        let dir = std::env::temp_dir().join(format!("dstsm-oc-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("roster-oc-{}", uuid::Uuid::new_v4()));
         let db = fixture(&dir);
         let session = one(&db);
 
@@ -736,7 +656,7 @@ mod tests {
 
     #[test]
     fn moving_a_workspace_relinks_the_project_and_keeps_the_slash_form() {
-        let dir = std::env::temp_dir().join(format!("dstsm-oc-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("roster-oc-{}", uuid::Uuid::new_v4()));
         let db = fixture(&dir);
         let session = one(&db);
 
@@ -770,26 +690,18 @@ mod tests {
     }
 
     #[test]
-    fn deleting_exports_to_trash_before_removing_rows() {
-        let dir = std::env::temp_dir().join(format!("dstsm-oc-{}", uuid::Uuid::new_v4()));
+    fn deleting_removes_every_row_and_the_side_artifact() {
+        let dir = std::env::temp_dir().join(format!("roster-oc-{}", uuid::Uuid::new_v4()));
         let db = fixture(&dir);
         let session = one(&db);
-        let data_dir = dir.join("dsh-tui");
-        let paths = Paths {
-            dsh_home: dir.join("dsh"),
-            data_dir,
-            session_roots: Vec::new(),
-            opencode_dirs: vec![dir.clone()],
-            trash_dir: dir.join("trash"),
-        };
 
-        let target = delete(&paths, &session).unwrap();
-        let text = fs::read_to_string(&target).unwrap();
-        let export: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(export["format"], "roster/opencode-session");
-        assert_eq!(export["identity"]["id"], "ses_one");
-        assert_eq!(export["messages"].as_array().unwrap().len(), 2);
-        assert_eq!(export["events"].as_array().unwrap().len(), 3);
+        // opencode keeps per-session diffs next to the database, not inside it.
+        let artifacts = dir.join("storage").join("session_diff");
+        fs::create_dir_all(&artifacts).unwrap();
+        let artifact = artifacts.join("ses_one.json");
+        fs::write(&artifact, b"{}").unwrap();
+
+        delete(&session).unwrap();
 
         let conn = Connection::open(&db).unwrap();
         for (table, column) in [("session", "id"), ("message", "session_id"), ("part", "session_id")] {
@@ -808,12 +720,13 @@ mod tests {
             })
             .unwrap();
         assert_eq!(events, 0, "the event log is cleared with the session");
+        assert!(!artifact.exists(), "the side artifact is removed");
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_missing_database_is_not_an_error() {
-        let dir = std::env::temp_dir().join(format!("dstsm-oc-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("roster-oc-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let loaded = load(&dir);
         assert!(loaded.sessions.is_empty());

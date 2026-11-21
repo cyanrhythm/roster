@@ -67,14 +67,14 @@ status.hint.normal: "↑↓/jk 移动  / 筛选  s 来源  r 重命名  w 工作
 status.hint.filter: "输入以筛选  Enter 应用  Esc 取消"
 status.hint.rename: "Enter 保存  Esc 取消"
 status.hint.workspace: "Enter 应用  Esc 取消  Ctrl+U 清空"
-status.hint.confirm_delete: "y 确认  n/Esc 取消"
+status.hint.confirm_delete: "y 永久删除  n/Esc 取消"
 status.hint.help: "按任意键关闭帮助"
 
 msg.reloaded: "已刷新"
 msg.load_errors: "%{count} 个会话无法加载（用 --list 查看详情）"
 msg.renamed: "已重命名为“%{title}”"
 msg.workspace_changed: "工作区已改为 %{cwd}"
-msg.deleted: "已移入回收站：%{path}"
+msg.deleted: "已删除“%{title}”"
 msg.rename_failed: "重命名失败：%{error}"
 msg.workspace_failed: "修改工作区失败：%{error}"
 msg.delete_failed: "删除失败：%{error}"
@@ -92,8 +92,8 @@ popup.workspace.hint_open: "Enter 应用 · Esc 取消 · 警告：会话正在�
 popup.delete.title: "删除会话"
 popup.delete.mounted: "警告：正被运行中的进程 %{pid} 占用"
 popup.delete.children: "警告：%{count} 个子会话将失去父会话。"
-popup.delete.body: "会话目录会被移动到回收站。"
-popup.delete.confirm: "按 y 确认，n 或 Esc 取消。"
+popup.delete.body: "会话会被永久删除，无法撤销。"
+popup.delete.confirm: "按 y 确认永久删除，n 或 Esc 取消。"
 
 help.title: "帮助"
 help.nav: "导航"
@@ -104,7 +104,7 @@ help.nav_filter: "  /            按标题、路径或 id 筛选"
 help.actions: "操作"
 help.action_rename: "  r            重命名会话（追加 session/title）"
 help.action_workspace: "  w            修改工作区（会话 cwd）"
-help.action_delete: "  d            删除会话（移入回收站）"
+help.action_delete: "  d            删除会话（永久删除，不可撤销）"
 help.action_reload: "  R            从磁盘刷新"
 help.action_source: "  s            切换来源（全部 / DST / opencode）"
 help.action_language: "  L            切换语言（跟随系统 / 中文 / English）"
@@ -138,7 +138,7 @@ cli.help: |
       --list                  列出会话后退出
       --json                  与 --list 连用，输出 JSON
       --rename <id> <标题>    重命名会话
-      --delete <id>           删除会话（移入回收站）
+      --delete <id>           永久删除会话
       --set-cwd <id> <路径>   修改会话工作区
       -h, --help              显示本帮助
 
@@ -152,7 +152,7 @@ err.title_empty: "标题不能为空"
 err.cwd_empty: "工作区路径不能为空"
 err.cwd_absolute: "工作区必须是绝对路径"
 err.target_exists: "目标会话目录已存在：%{path}"
-err.trash_move: "无法把会话移入回收站（是否正在运行？）：%{error}"
+err.delete_dir: "无法删除会话目录（是否正在运行？）：%{error}"
 err.dir_move: "无法移动会话目录：%{error}"
 err.rollback_failed: "会话目录已移到 %{path}，但写入新头部失败，且无法移回原位置：%{error}"
 err.empty_log: "会话日志为空"
@@ -168,7 +168,7 @@ err.wrong_source: "该操作不适用于这个来源"
 cli.warning: "警告：%{error}"
 cli.renamed: "已重命名 %{id} -> %{title}"
 cli.moved: "已移动 %{id} 到 %{cwd}"
-cli.trashed: "已把 %{id} 移动到 %{path}"
+cli.deleted: "已永久删除 %{id}"
 cli.err.unknown_argument: "未知参数：%{arg}"
 cli.err.missing_value: "参数 %{name} 缺少值"
 cli.err.no_session: "找不到匹配 %{needle} 的会话"

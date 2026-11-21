@@ -46,7 +46,7 @@ opencode（1.x）把一切放进一个库：`opencode.db`。对本工具重要�
 
 - **重命名**：先读出该会话最新的一条 `session.*` 事件，改它的 `info.title`，以**同样的类型**追加到 `event`（`seq` 取聚合计数器的下一个值，同时更新 `event_sequence`），再更新 `session.title`——一个事务里完成。这样 opencode 重放事件时看到的也是新标题。
 - **改工作区**：更新 `session.directory`，并把 `path` 重算成相对工作区的形式；如果新目录落在某个已知项目的工作区里，就顺带把 `project_id` 指过去（取最长匹配的前缀）。**不会凭空创建 project**——opencode 的项目 id 是仓库根提交 hash，编不出来。
-- **删除**：先把会话、消息、片段、待办、事件导出成一个 JSON 放进回收站，再逐表删掉（不依赖 `ON DELETE CASCADE`，以免历史 schema 不一致），最后清掉 `storage/session_diff/<id>.json`。
+- **删除**：逐表删掉会话、消息、片段、待办、事件（不依赖 `ON DELETE CASCADE`，以免历史 schema 不一致），最后清掉 `storage/session_diff/<id>.json`。**不保留副本，删了就没了。**
 
 列名在 opencode 各版本间有过变动（`cost`、token 计数、`path` 都是后加的），所以读取全部走列名查表，缺的列直接跳过。
 
@@ -93,7 +93,7 @@ $ magick -background none package/icon.svg -define icon:auto-resize=256,128,64,4
 | `s` | 切换来源：全部 → DST → opencode |
 | `r` | 重命名 |
 | `w` | 改工作区（DST 改 header cwd 并移动目录；opencode 改 `directory` 并重算项目归属） |
-| `d` | 删除（移到回收站） |
+| `d` | 删除（永久删除，不可撤销） |
 | `R` | 从磁盘重新加载 |
 | `L` | 切换语言：跟随系统 → 简体中文 → English |
 | `?` | 帮助 |
@@ -108,7 +108,7 @@ $ roster --list                     # id、cwd、标题、来源，制表符分�
 $ roster --list --json              # 结构化的完整字段
 $ roster --list --source opencode   # 只看一个来源
 $ roster --rename <id> <标题>
-$ roster --delete <id>              # 移到回收站
+$ roster --delete <id>              # 永久删除，不回收
 $ roster --set-cwd <id> /abs/path
 ```
 
@@ -136,7 +136,7 @@ $ roster --set-cwd <id> /abs/path
 - **DST 日志是权威数据**。重命名只追加一帧，从不重写历史；改工作区会重写 header 并移动目录，新头部先在内存里造好才动磁盘，失败会尽量回滚。
 - **opencode 走事务**。写操作在 `IMMEDIATE` 事务里完成，行和事件日志一起提交或一起回滚；`busy_timeout` 让并发写入排队而不是直接失败。
 - **dsh-tui 的派生文件尽力而为**。`session-index.json`、`session-lists/*.json`、`session_projcache*`、`last-used` / `resume.txt` / pins / mounts、`workspace.json` 会被同步更新；失败只吞掉，不中断操作。
-- **删除是移动**。DST 会话目录整体移到 `<data_dir>/roster-trash/<时间戳>/<工作区>/<id>/`；opencode 会话导出成 JSON 放到 `<data_dir>/roster-trash/<时间戳>/opencode/<项目>/<id>.json`。工具目前没有 `--restore`，需要时手动搬回去。
+- **删除是永久的**。DST 会话目录直接 `remove_dir_all`，工作区目录在最后一个会话被删掉后一并清理；opencode 会话把消息、片段、待办、事件一起删掉，并清掉 `storage/session_diff/<id>.json`。没有回收站，也没有 `--restore`——确认框是唯一的保险。
 - **占用中不阻止**。被运行的进程挂载的会话会警告，但仍可操作。
 
 ## 多语言
@@ -151,12 +151,13 @@ $ roster --set-cwd <id> /abs/path
 | --- | --- |
 | `roster.json` | 本工具的偏好，目前只有语言 |
 | `roster-titles.json` | 从 DST 日志里刮出来的标题缓存（按 size + mtime 失效） |
-| `roster-trash/` | 被删掉的会话（DST 目录 / opencode JSON） |
+
+改名前（`agent-session-manager` / `dst-session-manager`）留下的 `*-trash/` 和 `*-titles.json` 不会被读取或清理——那些旧回收站里的东西需要自己处理，新版本删除会话时不会再往里放。
 
 ## 开发
 
 ```console
-$ cargo test          # 31 个测试
+$ cargo test          # 32 个测试
 $ cargo clippy --all-targets
 $ cargo fmt
 ```
@@ -186,4 +187,4 @@ $ cargo fmt
 - opencode 的 `part` 表很大（几百 MB 的库并不罕见），所以列表不统计字节数，只显示消息/事件数量。
 - 改工作区时如果新目录不属于任何已知项目，会话仍挂在原项目下（不会伪造 project）。
 - 不阻止修改被占用中的会话。
-- 回收站不会自动清理。
+- 删除是永久的，没有回收站也没有 `--restore`。

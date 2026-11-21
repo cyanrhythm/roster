@@ -461,9 +461,10 @@ impl App {
                 };
                 self.mode = Mode::Normal;
                 match mutate::delete(&self.paths, &session) {
-                    Ok(trash) => {
+                    Ok(()) => {
+                        let title = session.display_title();
                         self.reload(None);
-                        self.set_info(i18n::tf("msg.deleted", &[("path", &trash.display().to_string())]));
+                        self.set_info(i18n::tf("msg.deleted", &[("title", &title)]));
                     }
                     Err(error) => self.set_error(i18n::tf("msg.delete_failed", &[("error", &error.to_string())])),
                 }

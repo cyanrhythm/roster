@@ -58,7 +58,6 @@ impl Kind {
 pub enum Location {
     Dst {
         root: PathBuf,
-        ws: String,
         dir: PathBuf,
         log_path: PathBuf,
         log_name: String,
@@ -280,7 +279,6 @@ pub fn load(paths: &Paths) -> LoadResult {
             if !workspace_path.is_dir() {
                 continue;
             }
-            let ws_name = workspace.file_name().to_string_lossy().to_string();
             let sessions_dir = match fs::read_dir(&workspace_path) {
                 Ok(iter) => iter,
                 Err(error) => {
@@ -297,7 +295,7 @@ pub fn load(paths: &Paths) -> LoadResult {
                 if seen.contains(&id) {
                     continue;
                 }
-                match read_session(root, &ws_name, &dir, &id, &index, &mut titles) {
+                match read_session(root, &dir, &id, &index, &mut titles) {
                     Ok(session) => {
                         seen.insert(id);
                         sessions.push(session);
@@ -332,7 +330,6 @@ pub fn load(paths: &Paths) -> LoadResult {
 
 fn read_session(
     root: &Path,
-    ws: &str,
     dir: &Path,
     id: &str,
     index: &HashMap<String, IndexEntry>,
@@ -403,7 +400,6 @@ fn read_session(
         model,
         location: Location::Dst {
             root: root.to_path_buf(),
-            ws: ws.to_string(),
             dir: dir.to_path_buf(),
             log_path,
             log_name,
@@ -702,7 +698,7 @@ mod tests {
 
     #[test]
     fn the_title_cache_only_trusts_a_log_it_has_seen() {
-        let dir = std::env::temp_dir().join(format!("dstsm-titles-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("roster-titles-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let mut cache = TitleCache::load(&dir);
@@ -725,7 +721,7 @@ mod tests {
 
     #[test]
     fn an_unchanged_cache_is_not_rewritten() {
-        let dir = std::env::temp_dir().join(format!("dstsm-titles-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("roster-titles-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let mut cache = TitleCache::load(&dir);
@@ -741,7 +737,7 @@ mod tests {
 
     #[test]
     fn a_second_load_reads_the_title_from_the_cache() {
-        let base = std::env::temp_dir().join(format!("dstsm-store-{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!("roster-store-{}", uuid::Uuid::new_v4()));
         let root = base.join("sessions");
         let dir = root.join("--E-code-x--").join("sess-1");
         std::fs::create_dir_all(&dir).unwrap();
@@ -761,7 +757,6 @@ mod tests {
             data_dir: base.join("data"),
             session_roots: vec![root],
             opencode_dirs: Vec::new(),
-            trash_dir: base.join("trash"),
         };
 
         let first = load(&paths);

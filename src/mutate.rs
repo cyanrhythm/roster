@@ -3,7 +3,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Result};
@@ -54,20 +54,22 @@ pub fn rename(paths: &Paths, session: &Session, title: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn delete(paths: &Paths, session: &Session) -> Result<PathBuf> {
-    let Location::Dst { dir, ws, .. } = &session.location else {
-        return crate::opencode::delete(paths, session);
+/// Deletes a session for good. The confirmation dialog is the only safety net;
+/// nothing is moved aside any more.
+pub fn delete(paths: &Paths, session: &Session) -> Result<()> {
+    let Location::Dst { dir, .. } = &session.location else {
+        return crate::opencode::delete(session);
     };
 
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let target = paths.trash_dir.join(stamp).join(ws).join(&session.id);
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
+    fs::remove_dir_all(dir).map_err(|error| anyhow!(tf("err.delete_dir", &[("error", &error.to_string())])))?;
+    // The workspace directory is a bucket of sessions; it goes when the last
+    // one does, and `remove_dir` refuses while anything else is inside.
+    if let Some(parent) = dir.parent() {
+        let _ = fs::remove_dir(parent);
     }
-    fs::rename(dir, &target).map_err(|error| anyhow!(tf("err.trash_move", &[("error", &error.to_string())])))?;
 
     cache::delete_everywhere(paths, &session.id);
-    Ok(target)
+    Ok(())
 }
 
 pub fn change_workspace(paths: &Paths, session: &Session, new_cwd: &str) -> Result<String> {
@@ -308,7 +310,7 @@ mod tests {
     /// checked together instead of against a hand-built `Session`.
     #[test]
     fn moves_the_workspace_directory_and_rewrites_the_header() {
-        let base = std::env::temp_dir().join(format!("dstsm-mutate-{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!("roster-mutate-{}", uuid::Uuid::new_v4()));
         let root = base.join("sessions");
         let (old_cwd, new_cwd) = workspace_pair();
         let log_name = "session.v4.jsonl.zstd";
@@ -335,7 +337,6 @@ mod tests {
             data_dir: base.join("data"),
             session_roots: vec![root.clone()],
             opencode_dirs: Vec::new(),
-            trash_dir: base.join("trash"),
         };
         let loaded = store::load(&paths);
         assert_eq!(loaded.sessions.len(), 1);
@@ -355,6 +356,56 @@ mod tests {
         let plain = decompress_frame(&bytes[frames[0].start..frames[0].end]).unwrap();
         let header: Value = serde_json::from_slice(&plain).unwrap();
         assert_eq!(header["cwd"], json!(moved));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Deleting is final now: the directory really goes, and so does the
+    /// workspace bucket once nothing else is left in it.
+    #[test]
+    fn deleting_a_session_removes_the_directory_and_the_empty_workspace() {
+        let base = std::env::temp_dir().join(format!("roster-mutate-{}", uuid::Uuid::new_v4()));
+        let root = base.join("sessions");
+        let cwd = if cfg!(windows) { r"E:\code\x" } else { "/code/x" };
+        let workspace = root.join(project_key(cwd));
+
+        for id in ["sess-1", "sess-2"] {
+            let dir = workspace.join(id);
+            fs::create_dir_all(&dir).unwrap();
+            let mut log = serde_json::to_vec(&json!({
+                "type": "session",
+                "version": 4,
+                "id": id,
+                "createdAt": 1,
+                "cwd": cwd,
+            }))
+            .unwrap();
+            log.push(b'\n');
+            log.extend_from_slice(br#"{"type":"assistant/message","seq":1}"#);
+            log.push(b'\n');
+            fs::write(dir.join("session.v4.jsonl"), &log).unwrap();
+        }
+
+        let paths = Paths {
+            dsh_home: base.join("dsh"),
+            data_dir: base.join("data"),
+            session_roots: vec![root.clone()],
+            opencode_dirs: Vec::new(),
+        };
+
+        let loaded = store::load(&paths);
+        assert_eq!(loaded.sessions.len(), 2);
+        let first = loaded.sessions.iter().find(|s| s.id == "sess-1").unwrap().clone();
+        delete(&paths, &first).unwrap();
+
+        assert!(!workspace.join("sess-1").exists(), "the session directory is gone");
+        assert!(workspace.exists(), "a workspace with a sibling stays");
+        assert!(!paths.data_dir.join("roster-trash").exists(), "nothing is moved aside");
+
+        let loaded = store::load(&paths);
+        let second = loaded.sessions[0].clone();
+        delete(&paths, &second).unwrap();
+        assert!(!workspace.exists(), "the empty workspace goes with its last session");
 
         let _ = fs::remove_dir_all(&base);
     }
