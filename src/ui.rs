@@ -206,31 +206,37 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    let mut lines: Vec<Line> = vec![
-        kv(&t("detail.id"), session.id.clone()),
-        kv(&t("detail.title_label"), session.title.clone()),
-        kv(&t("detail.source"), app.registry.label(session.source)),
-        kv(&t("detail.workspace"), session.cwd.clone()),
-        kv(&t("detail.created"), format_time(session.created_at)),
-        kv(&t("detail.updated"), format_time(session.mtime_ms)),
+    let mut rows: Vec<(String, String)> = vec![
+        (t("detail.id"), session.id.clone()),
+        (t("detail.title_label"), session.title.clone()),
+        (t("detail.source"), app.registry.label(session.source)),
+        (t("detail.workspace"), session.cwd.clone()),
+        (t("detail.created"), format_time(session.created_at)),
+        (t("detail.updated"), format_time(session.mtime_ms)),
     ];
 
     // Everything source-specific comes from the source itself; the core only
     // knows that a session may have extra rows.
     for row in app.registry.detail(session) {
-        lines.push(kv(&row.label, row.value));
+        rows.push((row.label, row.value));
     }
 
     if let Some(parent) = &session.parent {
-        lines.push(kv(&t("detail.parent"), parent.clone()));
+        rows.push((t("detail.parent"), parent.clone()));
     }
     if let Some(preset) = &session.agent_preset {
-        lines.push(kv(&t("detail.preset"), preset.clone()));
+        rows.push((t("detail.preset"), preset.clone()));
     }
     if let Some(model) = &session.model {
-        lines.push(kv(&t("detail.model"), model.clone()));
+        rows.push((t("detail.model"), model.clone()));
     }
-    lines.push(kv(&t("detail.title_source"), title_source_label(&session.title_source)));
+    rows.push((t("detail.title_source"), title_source_label(&session.title_source)));
+
+    // One column for every label, so the values line up no matter how wide the
+    // translated label happens to be.
+    let column = detail_column(&rows);
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = detail_lines(rows, column, inner_width);
 
     if let Some(pid) = session.mounted_pid {
         lines.push(Line::from(""));
@@ -430,11 +436,71 @@ fn title_source_label(source: &str) -> String {
     }
 }
 
-fn kv(label: &str, value: String) -> Line<'static> {
+/// Width of the label column: the widest label plus its colon.
+fn detail_column(rows: &[(String, String)]) -> usize {
+    rows.iter()
+        .map(|(label, _)| Line::from(label.as_str()).width() + 1)
+        .max()
+        .unwrap_or(0)
+}
+
+/// One row of the detail pane: the label starts at the left edge and is padded
+/// to the shared column, so every value begins at the same place.
+fn detail_line(label: &str, value: String, column: usize) -> Line<'static> {
+    let used = Line::from(label).width() + 1;
+    let gap = column.saturating_sub(used) + 2;
     Line::from(vec![
-        Span::styled(format!("{label:>13}: "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{label}:"), Style::default().fg(Color::DarkGray)),
+        Span::raw(" ".repeat(gap)),
         Span::styled(value, Style::default().fg(Color::White)),
     ])
+}
+
+/// Every row, with long values wrapped under the value column instead of
+/// falling back to the left edge.
+fn detail_lines(rows: Vec<(String, String)>, column: usize, inner_width: usize) -> Vec<Line<'static>> {
+    let value_column = column + 2;
+    let budget = inner_width.saturating_sub(value_column).max(1);
+    let mut lines = Vec::new();
+
+    for (label, value) in rows {
+        let mut chunks = wrap_to_width(&value, budget);
+        let first = chunks.remove(0);
+        lines.push(detail_line(&label, first, column));
+        for chunk in chunks {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(value_column)),
+                Span::styled(chunk, Style::default().fg(Color::White)),
+            ]));
+        }
+    }
+    lines
+}
+
+/// Splits `text` into pieces no wider than `width` display cells. Display
+/// width matters here because CJK labels and values are two cells per glyph.
+fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
+    let mut pieces = vec![String::new()];
+    let mut used = 0;
+    for character in text.chars() {
+        if character == '\n' {
+            pieces.push(String::new());
+            used = 0;
+            continue;
+        }
+        let cell = Line::from(character.to_string()).width();
+        if used + cell > width {
+            pieces.push(String::new());
+            used = 0;
+            // A space that lands on the break is not part of the next line.
+            if character == ' ' {
+                continue;
+            }
+        }
+        pieces.last_mut().expect("a piece always exists").push(character);
+        used += cell;
+    }
+    pieces
 }
 
 fn centered(area: Rect, percent_x: u16, height: u16) -> Rect {
@@ -600,6 +666,78 @@ mod tests {
         assert!(text.contains("deepseek/deepseek-flash"), "the model is shown");
         assert!(text.contains("OC"), "the source badge is shown");
         assert!(text.contains("Roster"), "the product name is in the header");
+
+        // Every value starts in the same column, whatever the label's width.
+        // The detail pane is the right 38% of a 120-column terminal.
+        let detail_start = 74;
+        let id_column = column_of(&terminal, "ses_test", detail_start).expect("the id is drawn");
+        let cwd_column = column_of(&terminal, "E:/code/x", detail_start).expect("the workspace is drawn");
+        let model_column = column_of(&terminal, "deepseek/deepseek-flash", detail_start).expect("the model is drawn");
+        assert_eq!(id_column, cwd_column, "id and workspace values align");
+        assert_eq!(id_column, model_column, "the model aligns with them too");
+    }
+
+    /// Display column at which `needle` starts, searching cells from `from_x`
+    /// so a value shown in the list pane is not mistaken for the detail one.
+    fn column_of(terminal: &Terminal<TestBackend>, needle: &str, from_x: u16) -> Option<usize> {
+        let buffer = terminal.backend().buffer();
+        let wanted: Vec<String> = needle.chars().map(|ch| ch.to_string()).collect();
+        for y in 0..buffer.area.height {
+            for x in from_x..buffer.area.width {
+                let fits = wanted.iter().enumerate().all(|(offset, symbol)| {
+                    let at = x + offset as u16;
+                    at < buffer.area.width && buffer[(at, y)].symbol() == symbol
+                });
+                if fits {
+                    return Some(x as usize);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn detail_rows_share_one_left_aligned_column() {
+        let rows = vec![
+            ("id".to_string(), "a".to_string()),
+            ("创建时间".to_string(), "b".to_string()),
+            ("messages / events".to_string(), "c".to_string()),
+        ];
+        let column = detail_column(&rows);
+        assert_eq!(column, 18, "the widest label plus its colon");
+
+        for (label, value) in &rows {
+            let line = detail_line(label, value.clone(), column);
+            let prefix: String = line.spans[..2].iter().map(|span| span.content.as_ref()).collect();
+            assert_eq!(Line::from(prefix.as_str()).width(), column + 2, "{label}");
+        }
+    }
+
+    #[test]
+    fn long_values_wrap_under_the_value_column() {
+        let rows = vec![("id".to_string(), "0123456789".repeat(5))];
+        let column = detail_column(&rows);
+        let inner_width = column + 2 + 12;
+        let lines = detail_lines(rows, column, inner_width);
+
+        assert!(lines.len() >= 4, "50 cells need several lines, got {}", lines.len());
+        for continuation in &lines[1..] {
+            let text: String = continuation.spans.iter().map(|span| span.content.as_ref()).collect();
+            assert!(
+                text.starts_with(&" ".repeat(column + 2)),
+                "the wrapped part stays in the value column: {text:?}"
+            );
+            assert!(Line::from(text.as_str()).width() <= inner_width);
+        }
+    }
+
+    #[test]
+    fn wrapping_counts_display_cells_not_chars() {
+        // Six CJK glyphs are twelve cells, so a twelve-cell line holds them all
+        // while an eleven-cell line must break.
+        assert_eq!(wrap_to_width("一二三四五六", 12), ["一二三四五六"]);
+        assert_eq!(wrap_to_width("一二三四五六", 11), ["一二三四五", "六"]);
+        assert_eq!(wrap_to_width("", 5), [""]);
     }
 
     #[test]
