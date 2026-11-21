@@ -2,14 +2,14 @@
 
 管理 **agent 会话**的命令行工具：一个全屏 TUI 用来浏览、筛选、重命名、删除会话和改工作区，外加一组可以脚本化的 CLI 子命令。Rust 编写，单二进制。
 
-目前支持两种会话存储：
+内置两种会话存储，彼此平级——核心层不认识任何一个，新的 agent 实现 `SessionSource` 就能接进来（见[接入一个新的 agent](#接入一个新的-agent)）：
 
 | 来源 | 存储 | 说明 |
 | --- | --- | --- |
 | **DST / dsh-tui** | JSONL 日志，每个会话一个目录 | `~/.dsh/sessions/**/session.vN.jsonl[.zstd]` |
 | **opencode** | 一个共享的 SQLite 数据库 | `~/.local/share/opencode/opencode.db` |
 
-两种都是直接读写磁盘，不经过 dsh-tui / opencode 进程，所以关掉它们之后也能整理历史。TUI 里按 `s` 在「全部 / DST / opencode」之间切换。
+两者都是直接读写磁盘，不经过 dsh-tui / opencode 进程，所以关掉它们之后也能整理历史。TUI 里按 `s` 在「全部 / 各来源」之间切换。
 
 ## DST 的数据长什么样
 
@@ -116,18 +116,22 @@ $ roster --set-cwd <id> /abs/path
 
 | 选项 | 说明 |
 | --- | --- |
-| `--source <all\|dst\|opencode>` | 只显示某个来源，默认 `all` |
-| `--dsh-home <路径>` | DSH 主目录，默认 `$DSH_HOME`，再退到 `~/.dsh` |
-| `--data-dir <路径>` | dsh-tui 数据目录，默认 `~/.dsh-tui` |
+| `--source <all\|dst\|opencode>` | 只显示某个来源，默认 `all`；可用的名字就是注册表里的来源 |
+| `--source-dir <来源>=<路径>` | 给任意来源追加一个目录，可重复（DST、opencode 各自有专用旗标，这个给新来源用） |
+| `--source-home <来源>=<路径>` | 给任意来源指定主目录 |
+| `--dsh-home <路径>` | DST 主目录，默认 `$DSH_HOME`，再退到 `~/.dsh` |
+| `--data-dir <路径>` | 本工具的数据目录，默认 `~/.dsh-tui` |
 | `--sessions-root <路径>` | 额外的 DST 会话根目录，可重复 |
 | `--opencode-dir <路径>` | 额外的 opencode 数据目录，可重复 |
 | `--lang <auto\|zh-CN\|en>` | 界面语言，`auto` 表示跟随系统并清掉已保存的选择 |
 
 ### 目录发现
 
-**DST 会话根**按顺序收集并去重（大小写不敏感）：`--sessions-root` → `$DSH_TUI_SESSION_ROOT` → `<dsh_home>/sessions` → `<data_dir>/sessions`。
+每个来源自己决定去哪儿找，`Env` 只提供命令行与家目录：
 
-**opencode 数据目录**：`--opencode-dir` → `$OPENCODE_DATA_DIR` → `$XDG_DATA_HOME/opencode` → `~/.local/share/opencode` → `%LOCALAPPDATA%\opencode`。
+**DST 会话根**按顺序收集并去重（大小写不敏感）：`--sessions-root`/`--source-dir dst=…` → `$DSH_TUI_SESSION_ROOT` → `<dsh_home>/sessions` → `<data_dir>/sessions`。
+
+**opencode 数据目录**：`--opencode-dir`/`--source-dir opencode=…` → `$OPENCODE_DATA_DIR` → `$XDG_DATA_HOME/opencode` → `~/.local/share/opencode` → `%LOCALAPPDATA%\opencode`。
 
 两边的列表都是**追加而不是覆盖**，重复的会话以先出现的为准。想只对某份拷贝操作（比如拿备份做实验），要把 `--dsh-home`、`--data-dir` 或 `USERPROFILE` 一起指到隔离目录去，否则默认位置仍会被扫描。
 
@@ -154,10 +158,31 @@ $ roster --set-cwd <id> /abs/path
 
 改名前（`agent-session-manager` / `dst-session-manager`）留下的 `*-trash/` 和 `*-titles.json` 不会被读取或清理——那些旧回收站里的东西需要自己处理，新版本删除会话时不会再往里放。
 
+## 接入一个新的 agent
+
+核心层不认识任何具体 agent：`app`、`ui`、`main` 只通过 `source::Registry` 工作，每条会话只暴露公共字段（标题、cwd、时间、父子关系……）加一个只有它自己的来源能读的 payload。接入步骤就三步：
+
+1. **写一个实现**：`src/sources/<agent>.rs`，实现 `SessionSource`：
+   ```rust
+   fn id(&self) -> &'static str;                 // --source 用的名字
+   fn label_key(&self)/badge_key(&self) -> …;    // 文案键（`source.x`、`list.badge.x`）
+   fn locations(&self, env: &Env) -> Vec<String>;// 显示在标题栏的路径
+   fn load(&self, env: &Env) -> SourceLoad;      // 读取；payload 塞进 Session::data
+   fn rename / delete / change_workspace;        // 三个写操作
+   fn detail(&self, session) -> Vec<DetailRow>;  // 可选：详情面板的额外行
+   fn measurement(&self, session) -> String;     // 可选：列表第三列
+   fn json_fields(&self, session) -> Map;        // 可选：--json 的额外字段
+   ```
+   写操作里用 `session.data::<你的数据类型>()?` 取回自己的 payload。
+2. **注册**：在 `src/sources/mod.rs` 的 `registry()` 里加一行 `registry.register(<agent>::Agent);`。顺序就是 TUI 里按 `s` 切换的顺序。
+3. **文案**：`locales/zh-CN.yml` 与 `en.yml` 各补 `source.<id>`、`list.badge.<id>`（以及自己的 `detail.*` 键）。`i18n` 测试会检查两边一致。
+
+数据目录不用改 CLI：`--source-dir <id>=<路径>` 与 `--source-home <id>=<路径>` 对任何已注册来源都生效，来源内部再决定要不要读自己的环境变量。
+
 ## 开发
 
 ```console
-$ cargo test          # 32 个测试
+$ cargo test          # 41 个测试
 $ cargo clippy --all-targets
 $ cargo fmt
 ```
@@ -166,14 +191,15 @@ $ cargo fmt
 
 | 模块 | 职责 |
 | --- | --- |
-| `paths.rs` | 目录发现与根目录优先级 |
+| `session.rs` | 来源无关的 `Session` 模型、详情行、单位格式化 |
+| `source.rs` | `SessionSource` trait、`Registry`、`Env`（路径解析） |
+| `sources/dst.rs` | DST / dsh-tui 的来源实现（日志帧、标题缓存、目录移动） |
+| `sources/opencode.rs` | opencode 的来源实现（SQLite、事件日志事务） |
+| `sources/mod.rs` | 注册表：新增 agent 的唯一改动点 |
 | `zstd_frames.rs` | zstd 帧扫描 / 单帧解压 / 单帧压缩 |
-| `store.rs` | 统一的数据模型（`Kind` + `Location`）、DST 加载、标题推导与缓存 |
-| `opencode.rs` | SQLite 读取、重命名 / 删除 / 改工作区 |
-| `mutate.rs` | 按来源分发的写操作 |
 | `cache.rs` | 同步 dsh-tui 的派生缓存（尽力而为，原子写） |
 | `app.rs` | 状态机与按键 |
-| `ui.rs` | ratatui 渲染 |
+| `ui.rs` | ratatui 渲染（不知道来源的存在） |
 | `i18n.rs` / `settings.rs` | 文案与偏好 |
 | `main.rs` | 参数解析、CLI 子命令、TUI 主循环 |
 | `build.rs` | Windows 资源：图标与版本信息 |

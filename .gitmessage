@@ -24,12 +24,12 @@
 # 破坏性变更在 type 后加 `!`，并在页脚写 BREAKING CHANGE: 说明影响。
 #
 # ── scope（按模块）──────────────────────────────────────────────
+#   source     SessionSource trait、Registry、Env（src/source.rs）
+#   session    来源无关的会话模型（src/session.rs）
+#   dst        DST 来源实现（src/sources/dst.rs）
+#   opencode   opencode 来源实现（src/sources/opencode.rs）
 #   frames     zstd 帧扫描、解压、编码（src/zstd_frames.rs）
-#   store      统一数据模型、DST 会话发现、header 解析、标题推导与缓存
-#   opencode   SQLite 读取与事件日志写入（src/opencode.rs）
-#   mutate     写操作分发：重命名、删除、改工作区
 #   cache      同步 dsh-tui 的派生缓存与偏好文件
-#   paths      目录发现与根目录优先级
 #   app        状态机、按键、输入编辑、来源筛选
 #   ui         TUI 渲染与布局
 #   i18n       文案与语言切换（含 locales/*.yml）
@@ -53,6 +53,9 @@
 # · opencode 的 event 表才是真相，session 表只是物化视图。
 #   任何写操作都要行 + 事件一起改，且 seq 取聚合计数器下一个值
 #   （不是"最新 session 事件 +1"，中间夹着 message 事件会撞号）。
+# · 核心层不许认识具体 agent：app/ui/main 只经 Registry 工作。
+#   新增来源改 sources/mod.rs 一行；往 Session 加字段前先想清楚
+#   是不是所有来源都有这个概念，否则塞进该来源自己的 payload。
 # · 界面文案两边一起改：zh-CN.yml 是原文，en.yml 是译文。
 #   i18n::tests 会对比键集合与 %{占位符}，漏一个就红。
 # · 写操作的分工别弄反：会话存储是权威数据，失败要报错；
