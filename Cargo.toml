@@ -3,6 +3,8 @@ name = "roster"
 version = "0.2.0"
 edition = "2021"
 description = "TUI manager for agent sessions (DST / dsh-tui and opencode)"
+license = "MIT"
+repository = "https://github.com/cyanrhythm/roster"
 
 [dependencies]
 anyhow = "1.0"
