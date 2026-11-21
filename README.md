@@ -1,10 +1,10 @@
 # roster
 
-<!-- 徽章是静态的（仓库还没配 CI）：改测试数、版本号时记得同步这一行 -->
+<!-- CI 徽章的测试数会自动更新；版本号是静态的，升级时记得改这一行 -->
+[![CI](https://github.com/cyanrhythm/roster/actions/workflows/ci.yml/badge.svg)](https://github.com/cyanrhythm/roster/actions/workflows/ci.yml)
 [![GitHub](https://img.shields.io/badge/github-cyanrhythm%2Froster-181717?logo=github)](https://github.com/cyanrhythm/roster)
 [![Rust](https://img.shields.io/badge/rust-2021-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078d4?logo=windows&logoColor=white)](#已知限制)
-[![Tests](https://img.shields.io/badge/tests-48%20passing-brightgreen)](#开发)
 [![i18n](https://img.shields.io/badge/i18n-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87%20%7C%20English-8a2be2)](#多语言)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.2.0-blue)](Cargo.toml)
