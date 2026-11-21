@@ -27,7 +27,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("file");
-    let temporary = path.with_file_name(format!("{file_name}.dstsm.tmp"));
+    let temporary = path.with_file_name(format!("{file_name}.roster.tmp"));
     fs::write(&temporary, bytes)?;
     if let Ok(metadata) = fs::metadata(path) {
         let _ = fs::set_permissions(&temporary, metadata.permissions());

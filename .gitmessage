@@ -34,7 +34,8 @@
 #   ui         TUI 渲染与布局
 #   i18n       文案与语言切换（含 locales/*.yml）
 #   cli        参数解析与 --list/--rename/--delete/--set-cwd/--source
-#   settings   本工具自己的偏好（agent-session-manager.json）
+#   settings   本工具自己的偏好（roster.json）
+#   packaging  Windows 资源、图标、安装包（build.rs、package/）
 #   repo       仓库级约定（.gitmessage、hooks、模板）
 #   deps       依赖升级
 #   release    版本号与发版流程
@@ -56,8 +57,10 @@
 #   i18n::tests 会对比键集合与 %{占位符}，漏一个就红。
 # · 写操作的分工别弄反：会话存储是权威数据，失败要报错；
 #   cache 里那些派生文件尽力而为，失败只许吞掉，不许中断主操作。
-# · 标题推导有缓存（agent-session-manager-titles.json），
+# · 标题推导有缓存（roster-titles.json），
 #   失效条件是 size + mtime。动推导逻辑时记得让缓存跟着失效。
+# · 改图标动的是 package/icon.svg 与 package/icon.ico 两个文件：
+#   ico 归 build.rs 用 winres 嵌进 exe，只改 svg 不会生效。
 #
 # ── 页脚 ─────────────────────────────────────────────────────────
 #   Closes #12                 关联并关闭 Issue

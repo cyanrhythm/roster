@@ -1,7 +1,7 @@
 # UI copy in English. Keys and %{placeholders} must match zh-CN.yml exactly —
 # i18n::tests compares the two tables.
 
-app.title: "Agent Session Manager"
+app.title: "Roster Session Manager"
 
 header.sessions: "%{count} sessions"
 header.shown: "%{count} shown"

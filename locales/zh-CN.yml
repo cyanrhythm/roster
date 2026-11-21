@@ -3,7 +3,7 @@
 # 这一份是原文：新增字符串先写这里，再补 en.yml。两边键必须一一对应，
 # i18n::tests 会盯着这件事。
 
-app.title: "Agent 会话管理器"
+app.title: "Roster 会话管理器"
 
 header.sessions: "%{count} 个会话"
 header.shown: "显示 %{count}"

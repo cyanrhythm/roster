@@ -59,6 +59,27 @@ $ cargo build --release
 $ ./target/release/roster --help
 ```
 
+### 图标与 Windows 资源
+
+`build.rs` 用 [`winres`](https://crates.io/crates/winres) 把 `package/icon.ico` 和版本信息嵌进 exe，所以在资源管理器里右键看属性、任务栏、Alt-Tab 都是新图标：
+
+| 资源 | 来源 |
+| --- | --- |
+| 图标 | `package/icon.ico` |
+| ProductName / InternalName / OriginalFilename | `CARGO_PKG_NAME`（即 `roster`） |
+| FileVersion / ProductVersion | `CARGO_PKG_VERSION` |
+| FileDescription | `CARGO_PKG_DESCRIPTION` |
+
+因为名字取自 `Cargo.toml`，以后再改名不会在属性页留下旧名字。非 Windows 目标会跳过整段资源编译。
+
+`package/icon.svg` 是图标源文件，`package/background.svg` 是它的底板；`icon.ico` 需要从 svg 重新导出（多个尺寸），例如：
+
+```console
+$ magick -background none package/icon.svg -define icon:auto-resize=256,128,64,48,32,16 package/icon.ico
+```
+
+只改 svg 不会影响 exe——**要重新导出 ico 才会生效**。
+
 ## 用 TUI
 
 不带参数运行即进入 TUI：左边是会话列表（`DST` / `OC` 是来源角标），右边是详情，底部一行状态栏。
@@ -154,8 +175,9 @@ $ cargo fmt
 | `ui.rs` | ratatui 渲染 |
 | `i18n.rs` / `settings.rs` | 文案与偏好 |
 | `main.rs` | 参数解析、CLI 子命令、TUI 主循环 |
+| `build.rs` | Windows 资源：图标与版本信息 |
 
-提交信息请用 `.gitmessage` 的格式（`git commit` 会自动套用）。
+提交信息请用 `.gitmessage` 的格式：`git config commit.template .gitmessage` 之后 `git commit` 会自动套用模板。
 
 ## 已知限制
 

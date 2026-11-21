@@ -530,9 +530,9 @@ mod tests {
     #[test]
     fn renders_all_modes_without_panicking() {
         let paths = Paths::discover(
-            Some(PathBuf::from("C:/dstsm-nonexistent-dsh")),
-            Some(PathBuf::from("C:/dstsm-nonexistent-data")),
-            vec![PathBuf::from("C:/dstsm-nonexistent-sessions")],
+            Some(PathBuf::from("C:/roster-nonexistent-dsh")),
+            Some(PathBuf::from("C:/roster-nonexistent-data")),
+            vec![PathBuf::from("C:/roster-nonexistent-sessions")],
             Vec::new(),
         );
         let mut app = App::new(paths, None, None);
@@ -556,9 +556,9 @@ mod tests {
     #[test]
     fn renders_an_opencode_session_in_the_detail_pane() {
         let paths = Paths::discover(
-            Some(PathBuf::from("C:/dstsm-nonexistent-dsh")),
-            Some(PathBuf::from("C:/dstsm-nonexistent-data")),
-            vec![PathBuf::from("C:/dstsm-nonexistent-sessions")],
+            Some(PathBuf::from("C:/roster-nonexistent-dsh")),
+            Some(PathBuf::from("C:/roster-nonexistent-data")),
+            vec![PathBuf::from("C:/roster-nonexistent-sessions")],
             Vec::new(),
         );
         let mut app = App::new(paths, None, None);
@@ -602,14 +602,15 @@ mod tests {
             .collect();
         assert!(text.contains("deepseek/deepseek-flash"), "the model is shown");
         assert!(text.contains("OC"), "the source badge is shown");
+        assert!(text.contains("Roster"), "the product name is in the header");
     }
 
     #[test]
     fn renders_in_both_languages() {
         let paths = Paths::discover(
-            Some(PathBuf::from("C:/dstsm-nonexistent-dsh")),
-            Some(PathBuf::from("C:/dstsm-nonexistent-data")),
-            vec![PathBuf::from("C:/dstsm-nonexistent-sessions")],
+            Some(PathBuf::from("C:/roster-nonexistent-dsh")),
+            Some(PathBuf::from("C:/roster-nonexistent-data")),
+            vec![PathBuf::from("C:/roster-nonexistent-sessions")],
             Vec::new(),
         );
         let mut app = App::new(paths, None, None);
