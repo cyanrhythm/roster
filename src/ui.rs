@@ -27,22 +27,33 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     match app.mode {
         Mode::Filter => draw_input_popup(frame, app, &t("popup.filter.title"), &t("popup.filter.hint")),
-        Mode::Rename => draw_input_popup(frame, app, &t("popup.rename.title"), &t("popup.rename.hint")),
+        Mode::Rename => {
+            let title = popup_title(app, "popup.rename.title", "popup.rename.title_many");
+            draw_input_popup(frame, app, &title, &t("popup.rename.hint"));
+        }
         Mode::Workspace => {
-            let open = app
-                .current()
-                .map(|session| session.mounted_pid.is_some())
-                .unwrap_or(false);
+            let open = app.targets().iter().any(|session| session.mounted_pid.is_some());
             let hint = if open {
                 t("popup.workspace.hint_open")
             } else {
                 t("popup.workspace.hint")
             };
-            draw_input_popup(frame, app, &t("popup.workspace.title"), &hint);
+            let title = popup_title(app, "popup.workspace.title", "popup.workspace.title_many");
+            draw_input_popup(frame, app, &title, &hint);
         }
         Mode::ConfirmDelete => draw_delete_popup(frame, app),
         Mode::Help => draw_help(frame),
         Mode::Normal => {}
+    }
+}
+
+/// "Rename session" for one, "Rename 3 sessions" for a batch.
+fn popup_title(app: &App, single_key: &str, many_key: &str) -> String {
+    let count = app.target_count();
+    if count > 1 {
+        tf(many_key, &[("count", &count.to_string())])
+    } else {
+        t(single_key)
     }
 }
 
@@ -89,6 +100,13 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ),
     ];
+    if app.marked_count() > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            tf("header.marked", &[("count", &app.marked_count().to_string())]),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
     if !app.filter.is_empty() {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
@@ -135,7 +153,13 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
             };
             let accent = app.registry.accent(session.source);
             let badge = app.registry.badge(session.source);
+            let marked = app.is_marked(&session.id);
+            let marker = if marked { "[x]" } else { "[ ]" };
             let title = Line::from(vec![
+                Span::styled(
+                    format!("{marker} "),
+                    Style::default().fg(if marked { Color::Yellow } else { Color::DarkGray }),
+                ),
                 Span::styled(
                     format!("{badge} "),
                     Style::default().fg(Color::Rgb(accent[0], accent[1], accent[2])),
@@ -282,17 +306,33 @@ fn draw_input_popup(frame: &mut Frame, app: &App, title: &str, hint: &str) {
 }
 
 fn draw_delete_popup(frame: &mut Frame, app: &App) {
-    let area = centered(frame.area(), 70, 9);
-    frame.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} ", t("popup.delete.title")))
-        .border_style(Style::default().fg(Color::Red));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     let mut lines = Vec::new();
-    if let Some(session) = app.current() {
+    let targets = app.targets();
+    if targets.len() > 1 {
+        lines.push(Line::from(Span::styled(
+            tf("popup.delete.many", &[("count", &targets.len().to_string())]),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )));
+        for session in targets.iter().take(5) {
+            lines.push(Line::from(Span::styled(
+                format!("  {}  ·  {}", session.display_title(), session.cwd),
+                Style::default().fg(Color::Gray),
+            )));
+        }
+        if targets.len() > 5 {
+            lines.push(Line::from(Span::styled(
+                tf("popup.delete.more", &[("count", &(targets.len() - 5).to_string())]),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        let mounted = targets.iter().filter(|session| session.mounted_pid.is_some()).count();
+        if mounted > 0 {
+            lines.push(Line::from(Span::styled(
+                tf("popup.delete.mounted_many", &[("count", &mounted.to_string())]),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+    } else if let Some(session) = targets.first() {
         lines.push(Line::from(Span::styled(
             session.display_title(),
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -328,19 +368,21 @@ fn draw_delete_popup(frame: &mut Frame, app: &App) {
         t("popup.delete.confirm"),
         Style::default().fg(Color::Yellow),
     )));
+
+    // The batch listing makes the popup taller than the single-session one.
+    let height = (lines.len() as u16 + 2).min(frame.area().height);
+    let area = centered(frame.area(), 70, height);
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", t("popup.delete.title")))
+        .border_style(Style::default().fg(Color::Red));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), inner);
 }
 
 fn draw_help(frame: &mut Frame) {
-    let area = centered(frame.area(), 72, 19);
-    frame.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} ", t("help.title")))
-        .border_style(Style::default().fg(Color::Cyan));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     let header = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let lines = vec![
         Line::from(Span::styled(t("help.nav"), header)),
@@ -348,6 +390,8 @@ fn draw_help(frame: &mut Frame) {
         Line::from(t("help.nav_top")),
         Line::from(t("help.nav_page")),
         Line::from(t("help.nav_filter")),
+        Line::from(t("help.nav_mark")),
+        Line::from(t("help.nav_mark_all")),
         Line::from(""),
         Line::from(Span::styled(t("help.actions"), header)),
         Line::from(t("help.action_rename")),
@@ -360,6 +404,16 @@ fn draw_help(frame: &mut Frame) {
         Line::from(""),
         Line::from(Span::styled(t("help.footer"), Style::default().fg(Color::DarkGray))),
     ];
+
+    let height = (lines.len() as u16 + 2).min(frame.area().height);
+    let area = centered(frame.area(), 72, height);
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", t("help.title")))
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
@@ -459,6 +513,45 @@ mod tests {
 
         app.mode = Mode::ConfirmDelete;
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    #[test]
+    fn a_marked_session_is_drawn_with_a_checkbox() {
+        let mut app = test_app();
+        app.sessions = vec![Session {
+            source: "opencode",
+            id: "ses_marked".to_string(),
+            cwd: "E:/code/x".to_string(),
+            created_at: 1,
+            mtime_ms: 2,
+            title: "needs a checkbox".to_string(),
+            title_source: "opencode".to_string(),
+            parent: None,
+            agent_preset: None,
+            model: None,
+            mounted_pid: None,
+            data: Arc::new(()),
+        }];
+        app.visible = vec![0];
+        app.list_state.select(Some(0));
+        app.marked.insert("ses_marked".to_string());
+
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("[x]"), "the marked row shows a checked box");
+        assert!(
+            text.contains("已选") || text.contains("marked"),
+            "the header counts the marks"
+        );
     }
 
     #[test]
