@@ -424,11 +424,14 @@ fn human_age(ms: u64) -> String {
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::session::Session;
     use crate::source::Env;
     use crate::sources;
+    use crate::sources::opencode::OpencodeData;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     fn test_app() -> App {
         let env = Env::isolated(
@@ -456,6 +459,54 @@ mod tests {
 
         app.mode = Mode::ConfirmDelete;
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    #[test]
+    fn renders_an_opencode_session_in_the_detail_pane() {
+        let mut app = test_app();
+        app.sessions = vec![Session {
+            source: "opencode",
+            id: "ses_test".to_string(),
+            cwd: "E:/code/x".to_string(),
+            created_at: 1_700_000_000_000,
+            mtime_ms: 1_700_000_100_000,
+            title: "a database session".to_string(),
+            title_source: "opencode".to_string(),
+            parent: None,
+            agent_preset: Some("build".to_string()),
+            model: Some("deepseek/deepseek-flash".to_string()),
+            mounted_pid: None,
+            data: Arc::new(OpencodeData {
+                db: PathBuf::from("C:/oc/opencode.db"),
+                project_id: "proj".to_string(),
+                worktree: Some("E:/code/x".to_string()),
+                messages: 3,
+                events: 9,
+                cost: 0.0125,
+                tokens_in: 10,
+                tokens_out: 20,
+                tokens_reasoning: 1,
+                tokens_cache_read: 30,
+                tokens_cache_write: 2,
+            }),
+        }];
+        app.visible = vec![0];
+        app.list_state.select(Some(0));
+
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("deepseek/deepseek-flash"), "the model is shown");
+        assert!(text.contains("OC"), "the source badge is shown");
+        assert!(text.contains("Roster"), "the product name is in the header");
     }
 
     #[test]

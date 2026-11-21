@@ -1,6 +1,7 @@
 //! Sources shipped with the tool.
 
 pub mod dst;
+pub mod opencode;
 
 use crate::source::Registry;
 
@@ -9,5 +10,6 @@ use crate::source::Registry;
 pub fn registry() -> Registry {
     let mut registry = Registry::new();
     registry.register(dst::Dst);
+    registry.register(opencode::Opencode);
     registry
 }

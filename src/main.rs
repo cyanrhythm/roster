@@ -24,6 +24,7 @@ struct Cli {
     dsh_home: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     sessions_roots: Vec<PathBuf>,
+    opencode_dirs: Vec<PathBuf>,
     /// `--source-home <id>=<path>` and `--source-dir <id>=<path>` land here, so
     /// a source added later needs no CLI changes.
     source_homes: Vec<(String, PathBuf)>,
@@ -155,6 +156,9 @@ fn build_env(cli: &Cli) -> Env {
     for path in &cli.sessions_roots {
         env = env.with_dir("dst", path.clone());
     }
+    for path in &cli.opencode_dirs {
+        env = env.with_dir("opencode", path.clone());
+    }
     for (source, path) in &cli.source_homes {
         env = env.with_home(source.clone(), path.clone());
     }
@@ -279,6 +283,9 @@ fn parse_args() -> Result<Cli> {
             "--data-dir" => cli.data_dir = Some(PathBuf::from(take("--data-dir")?)),
             "--sessions-root" => {
                 cli.sessions_roots.push(PathBuf::from(take("--sessions-root")?));
+            }
+            "--opencode-dir" => {
+                cli.opencode_dirs.push(PathBuf::from(take("--opencode-dir")?));
             }
             "--source-dir" => {
                 cli.source_dirs
