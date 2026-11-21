@@ -1,29 +1,44 @@
 # UI copy in English. Keys and %{placeholders} must match zh-CN.yml exactly —
 # i18n::tests compares the two tables.
 
-app.title: "DST Session Manager"
+app.title: "Agent Session Manager"
 
 header.sessions: "%{count} sessions"
 header.shown: "%{count} shown"
+header.breakdown: "DST %{dst} · opencode %{opencode}"
+header.source: "source: %{label}"
 header.filter: "filter: %{query}"
 header.typing: "(typing)"
 header.load_errors: "%{count} load errors"
 header.root: "root: %{roots}"
 header.language: "lang: %{label}"
-header.language_auto: "lang: %{label} (system)"
 
 list.title: "Sessions (%{count})"
 list.open_badge: " · open"
+list.badge.dst: "DST"
+list.badge.opencode: "OC"
+list.messages: "%{count} msgs"
+source.all: "all"
+source.dst: "DST"
+source.opencode: "opencode"
 
 detail.title: "Details"
 detail.empty: "No session selected"
 detail.id: "id"
 detail.title_label: "title"
+detail.source: "source"
 detail.workspace: "workspace"
 detail.created: "created"
 detail.updated: "updated"
 detail.size: "size"
 detail.log: "log"
+detail.records: "messages / events"
+detail.records_value: "%{messages} messages · %{events} events"
+detail.tokens: "tokens"
+detail.tokens_value: "in %{input} · out %{output} · reasoning %{reasoning} · cache %{cache}"
+detail.cost: "cost"
+detail.project: "project"
+detail.db: "database"
 detail.parent: "parent"
 detail.preset: "preset"
 detail.model: "model"
@@ -39,12 +54,14 @@ title_source.renamed: "renamed"
 title_source.auto: "auto"
 title_source.log: "log event"
 title_source.prompt: "first prompt"
+title_source.opencode: "database title"
+title_source.slug: "session slug"
 title_source.fallback: "fallback"
 
 common.untitled: "(untitled)"
 common.unknown: "unknown"
 
-status.hint.normal: "↑↓/jk move  / filter  r rename  w workspace  d delete  R reload  L language  ? help  q quit"
+status.hint.normal: "↑↓/jk move  / filter  s source  r rename  w workspace  d delete  R reload  L language  ? help  q quit"
 status.hint.filter: "type to filter  Enter apply  Esc cancel"
 status.hint.rename: "Enter save  Esc cancel"
 status.hint.workspace: "Enter apply  Esc cancel  Ctrl+U clear"
@@ -61,6 +78,7 @@ msg.workspace_failed: "workspace change failed: %{error}"
 msg.delete_failed: "delete failed: %{error}"
 msg.language: "language: %{label}"
 msg.language_auto: "language: %{label} (system)"
+msg.source: "source: %{label}"
 
 popup.filter.title: "Filter"
 popup.filter.hint: "Enter apply · Esc cancel"
@@ -86,9 +104,10 @@ help.action_rename: "  r            rename session (append session/title)"
 help.action_workspace: "  w            change workspace (session cwd)"
 help.action_delete: "  d            delete session (move to trash)"
 help.action_reload: "  R            reload from disk"
+help.action_source: "  s            switch source (all / DST / opencode)"
 help.action_language: "  L            switch language (system / 中文 / English)"
 help.action_quit: "  q / Esc      quit"
-help.footer: "dsh-tui / DST storage is modified directly; restart dst to see changes."
+help.footer: "dsh-tui / DST and opencode storage is modified directly; restart them to see changes."
 
 time.just_now: "just now"
 time.minutes_ago: "%{count} min ago"
@@ -96,32 +115,34 @@ time.hours_ago: "%{count} h ago"
 time.days_ago: "%{count} d ago"
 
 cli.help: |
-  dst-session-manager %{version}
+  roster %{version}
 
-  Manage dsh-tui (DST) session logs.
+  Manage dsh-tui (DST) and opencode sessions.
 
   USAGE:
-      dst-session-manager [OPTIONS]
-      dst-session-manager --list [--json] [OPTIONS]
-      dst-session-manager --rename <id> <title> [OPTIONS]
-      dst-session-manager --delete <id> [OPTIONS]
-      dst-session-manager --set-cwd <id> <absolute-path> [OPTIONS]
+      roster [OPTIONS]
+      roster --list [--json] [OPTIONS]
+      roster --rename <id> <title> [OPTIONS]
+      roster --delete <id> [OPTIONS]
+      roster --set-cwd <id> <absolute-path> [OPTIONS]
 
   OPTIONS:
+      --source <all|dst|opencode>  Show one source only (default: all)
       --dsh-home <PATH>       DSH home (default: $DSH_HOME or ~/.dsh)
       --data-dir <PATH>       dsh-tui data dir (default: ~/.dsh-tui)
-      --sessions-root <PATH>  Extra session root (repeatable)
+      --sessions-root <PATH>  Extra DST session root (repeatable)
+      --opencode-dir <PATH>   opencode data dir (repeatable, ~/.local/share/opencode)
       --lang <auto|zh-CN|en>  UI language (default: system or last choice)
       --list                  Print sessions and exit
       --json                  With --list, print JSON
-      --rename <id> <title>   Append a user title event
-      --delete <id>           Move the session directory to the trash
-      --set-cwd <id> <path>   Change the session workspace (header cwd + directory)
+      --rename <id> <title>   Rename a session
+      --delete <id>           Delete a session (moved to the trash)
+      --set-cwd <id> <path>   Change a session's workspace
       -h, --help              Show this help
 
   TUI KEYS:
-      ↑↓/jk move   / filter   r rename   w workspace
-      d delete     R reload   L language ? help   q quit
+      ↑↓/jk move   / filter   s source   r rename   w workspace
+      d delete     R reload   L language ? help     q quit
 
   Session ids may be abbreviated to an unambiguous prefix.
 
@@ -131,12 +152,16 @@ err.cwd_absolute: "workspace must be an absolute path"
 err.target_exists: "target session directory already exists: %{path}"
 err.trash_move: "cannot move session to trash (is it open?): %{error}"
 err.dir_move: "cannot move session directory: %{error}"
+err.rollback_failed: "session directory now sits at %{path}: writing the new header failed and it could not be moved back: %{error}"
 err.empty_log: "empty session log"
 err.empty_header: "header frame is empty"
 err.header_frame: "first frame is not exactly one header line"
 err.invalid_target: "invalid target directory"
 err.no_log: "no session log found"
 err.no_cwd: "session header has no cwd"
+err.opencode_schema: "opencode database has no session table"
+err.session_missing: "the session no longer exists (it may have been deleted)"
+err.wrong_source: "this operation does not apply to this source"
 
 cli.warning: "warning: %{error}"
 cli.renamed: "renamed %{id} -> %{title}"
@@ -147,3 +172,4 @@ cli.err.missing_value: "missing value for %{name}"
 cli.err.no_session: "no session matching %{needle}"
 cli.err.ambiguous: "ambiguous session id prefix %{needle} (%{count} matches)"
 cli.err.invalid_language: "unsupported language: %{value} (use auto, zh-CN or en)"
+cli.err.invalid_source: "unsupported source: %{value} (use all, dst or opencode)"

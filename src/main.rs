@@ -2,6 +2,7 @@ mod app;
 mod cache;
 mod i18n;
 mod mutate;
+mod opencode;
 mod paths;
 mod settings;
 mod store;
@@ -17,13 +18,15 @@ use crossterm::event::{self, Event, KeyEventKind};
 
 use app::App;
 use paths::Paths;
-use store::Session;
+use store::{Kind, Location, Session};
 
 #[derive(Default)]
 struct Cli {
     dsh_home: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     sessions_roots: Vec<PathBuf>,
+    opencode_dirs: Vec<PathBuf>,
+    source: Option<Kind>,
     lang: Option<String>,
     list: bool,
     json: bool,
@@ -36,7 +39,12 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = parse_args()?;
 
-    let paths = Paths::discover(cli.dsh_home.clone(), cli.data_dir.clone(), cli.sessions_roots.clone());
+    let paths = Paths::discover(
+        cli.dsh_home.clone(),
+        cli.data_dir.clone(),
+        cli.sessions_roots.clone(),
+        cli.opencode_dirs.clone(),
+    );
     let language_choice = init_language(&paths, cli.lang.as_deref())?;
 
     if cli.help {
@@ -46,29 +54,23 @@ fn main() -> Result<()> {
 
     if cli.list {
         let result = store::load(&paths);
+        let sessions: Vec<&Session> = result
+            .sessions
+            .iter()
+            .filter(|session| cli.source.is_none_or(|kind| kind == session.kind()))
+            .collect();
         if cli.json {
-            let rows: Vec<serde_json::Value> = result
-                .sessions
-                .iter()
-                .map(|session| {
-                    serde_json::json!({
-                        "id": session.id,
-                        "title": session.title,
-                        "cwd": session.cwd,
-                        "createdAt": session.created_at,
-                        "updatedAt": session.mtime_ms,
-                        "size": session.size,
-                        "frames": session.frames,
-                        "parent": session.parent,
-                        "compressed": session.compressed,
-                        "log": session.log_path.display().to_string(),
-                    })
-                })
-                .collect();
+            let rows: Vec<serde_json::Value> = sessions.iter().map(|session| session_json(session)).collect();
             println!("{}", serde_json::to_string_pretty(&rows)?);
         } else {
-            for session in &result.sessions {
-                println!("{}\t{}\t{}", session.id, session.cwd, session.title);
+            for session in sessions {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    session.id,
+                    session.cwd,
+                    session.title,
+                    session.kind().as_str()
+                );
             }
         }
         for error in result.errors {
@@ -110,7 +112,76 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    run_tui(paths, language_choice)
+    run_tui(paths, language_choice, cli.source)
+}
+
+/// The `--json` shape: one flat object, with the fields that only make sense
+/// for one source added on top.
+fn session_json(session: &Session) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "id": session.id,
+        "source": session.kind().as_str(),
+        "title": session.title,
+        "titleSource": session.title_source,
+        "cwd": session.cwd,
+        "createdAt": session.created_at,
+        "updatedAt": session.mtime_ms,
+        "parent": session.parent,
+        "agent": session.agent_preset,
+        "model": session.model,
+    });
+    let object = value.as_object_mut().expect("a JSON object");
+    match &session.location {
+        Location::Dst {
+            root,
+            dir,
+            log_path,
+            log_name,
+            compressed,
+            frames,
+            size,
+            ..
+        } => {
+            object.insert("root".into(), serde_json::json!(root.display().to_string()));
+            object.insert("dir".into(), serde_json::json!(dir.display().to_string()));
+            object.insert("log".into(), serde_json::json!(log_path.display().to_string()));
+            object.insert("logName".into(), serde_json::json!(log_name));
+            object.insert("compressed".into(), serde_json::json!(compressed));
+            object.insert("frames".into(), serde_json::json!(frames));
+            object.insert("size".into(), serde_json::json!(size));
+        }
+        Location::Opencode {
+            db,
+            project_id,
+            worktree,
+            messages,
+            events,
+            cost,
+            tokens_in,
+            tokens_out,
+            tokens_reasoning,
+            tokens_cache_read,
+            tokens_cache_write,
+        } => {
+            object.insert("db".into(), serde_json::json!(db.display().to_string()));
+            object.insert("projectId".into(), serde_json::json!(project_id));
+            object.insert("worktree".into(), serde_json::json!(worktree));
+            object.insert("messages".into(), serde_json::json!(messages));
+            object.insert("events".into(), serde_json::json!(events));
+            object.insert("cost".into(), serde_json::json!(cost));
+            object.insert(
+                "tokens".into(),
+                serde_json::json!({
+                    "input": tokens_in,
+                    "output": tokens_out,
+                    "reasoning": tokens_reasoning,
+                    "cacheRead": tokens_cache_read,
+                    "cacheWrite": tokens_cache_write,
+                }),
+            );
+        }
+    }
+    value
 }
 
 /// Applies the startup language and returns the user's preference: `None`
@@ -134,7 +205,7 @@ fn init_language(paths: &Paths, explicit: Option<&str>) -> Result<Option<i18n::L
     Ok(choice)
 }
 
-fn run_tui(paths: Paths, language_choice: Option<i18n::Language>) -> Result<()> {
+fn run_tui(paths: Paths, language_choice: Option<i18n::Language>, source: Option<Kind>) -> Result<()> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         ratatui::restore();
@@ -142,7 +213,7 @@ fn run_tui(paths: Paths, language_choice: Option<i18n::Language>) -> Result<()> 
     }));
 
     let mut terminal = ratatui::init();
-    let mut app = App::new(paths, language_choice);
+    let mut app = App::new(paths, language_choice, source);
 
     let outcome = (|| -> Result<()> {
         loop {
@@ -211,6 +282,20 @@ fn parse_args() -> Result<Cli> {
             "--data-dir" => cli.data_dir = Some(PathBuf::from(take("--data-dir")?)),
             "--sessions-root" => {
                 cli.sessions_roots.push(PathBuf::from(take("--sessions-root")?));
+            }
+            "--opencode-dir" => {
+                cli.opencode_dirs.push(PathBuf::from(take("--opencode-dir")?));
+            }
+            "--source" => {
+                let value = take("--source <all|dst|opencode>")?;
+                cli.source = if value.eq_ignore_ascii_case("all") {
+                    None
+                } else {
+                    Some(
+                        Kind::from_arg(&value)
+                            .ok_or_else(|| anyhow!(i18n::tf("cli.err.invalid_source", &[("value", &value)])))?,
+                    )
+                };
             }
             "--rename" => {
                 let id = take("--rename <id>")?;

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="256" height="256">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="75%">
+      <stop offset="0%" stop-color="#212329"/>
+      <stop offset="100%" stop-color="#151619"/>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="232" ry="232" fill="url(#bg)"/>
+
+  <!-- selected session -->
+  <rect x="170" y="288" width="684" height="112" rx="42" fill="#1296db"/>
+  <g fill="none" stroke="#ffffff" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M214 318 L240 344 L214 370"/>
+    <path d="M256 370 H292"/>
+  </g>
+  <rect x="330" y="318" width="286" height="24" rx="12" fill="#ffffff"/>
+  <rect x="330" y="356" width="168" height="18" rx="9" fill="#ffffff" opacity="0.72"/>
+
+  <!-- other sessions -->
+  <g fill="none" stroke="#4aa9dd" stroke-width="13" stroke-linecap="round" stroke-linejoin="round" opacity="0.85">
+    <path d="M214 488 L240 514 L214 540"/>
+    <path d="M256 540 H292"/>
+  </g>
+  <rect x="330" y="488" width="330" height="24" rx="12" fill="#4aa9dd" opacity="0.85"/>
+  <rect x="330" y="526" width="205" height="18" rx="9" fill="#4aa9dd" opacity="0.55"/>
+
+  <g fill="none" stroke="#4aa9dd" stroke-width="13" stroke-linecap="round" stroke-linejoin="round" opacity="0.5">
+    <path d="M214 658 L240 684 L214 710"/>
+    <path d="M256 710 H292"/>
+  </g>
+  <rect x="330" y="658" width="240" height="24" rx="12" fill="#4aa9dd" opacity="0.5"/>
+  <rect x="330" y="696" width="140" height="18" rx="9" fill="#4aa9dd" opacity="0.33"/>
+</svg>

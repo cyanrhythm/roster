@@ -10,28 +10,106 @@ use crate::i18n::t;
 use crate::paths::Paths;
 use crate::zstd_frames::{decompress_frame, scan_frames};
 
+/// Which agent wrote the session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// dsh / dsh-tui: JSONL logs, one directory per session.
+    Dst,
+    /// opencode: rows in a shared SQLite database.
+    Opencode,
+}
+
+impl Kind {
+    /// The name used on the command line and in `--json`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dst => "dst",
+            Self::Opencode => "opencode",
+        }
+    }
+
+    pub fn badge_key(self) -> &'static str {
+        match self {
+            Self::Dst => "list.badge.dst",
+            Self::Opencode => "list.badge.opencode",
+        }
+    }
+
+    /// What the source is called inside a sentence ("source: opencode").
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Self::Dst => "source.dst",
+            Self::Opencode => "source.opencode",
+        }
+    }
+
+    /// Accepts what a user is likely to type for `--source`.
+    pub fn from_arg(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "dst" | "dsh" | "dsh-tui" => Some(Self::Dst),
+            "opencode" | "oc" => Some(Self::Opencode),
+            _ => None,
+        }
+    }
+}
+
+/// Where a session is stored, which is also how it has to be mutated.
+#[derive(Clone, Debug)]
+pub enum Location {
+    Dst {
+        root: PathBuf,
+        ws: String,
+        dir: PathBuf,
+        log_path: PathBuf,
+        log_name: String,
+        compressed: bool,
+        frames: usize,
+        size: u64,
+    },
+    Opencode {
+        db: PathBuf,
+        project_id: String,
+        /// The git worktree the project row points at, when it has one.
+        worktree: Option<String>,
+        messages: u64,
+        events: u64,
+        cost: f64,
+        tokens_in: u64,
+        tokens_out: u64,
+        tokens_reasoning: u64,
+        tokens_cache_read: u64,
+        tokens_cache_write: u64,
+    },
+}
+
+impl Location {
+    pub fn kind(&self) -> Kind {
+        match self {
+            Self::Dst { .. } => Kind::Dst,
+            Self::Opencode { .. } => Kind::Opencode,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Session {
     pub id: String,
-    pub root: PathBuf,
-    pub ws: String,
-    pub dir: PathBuf,
-    pub log_path: PathBuf,
-    pub log_name: String,
-    pub compressed: bool,
     pub cwd: String,
     pub created_at: u64,
     pub mtime_ms: u64,
-    pub size: u64,
-    pub frames: usize,
     pub title: String,
     pub title_source: String,
     pub parent: Option<String>,
     pub agent_preset: Option<String>,
     pub model: Option<String>,
+    pub location: Location,
 }
 
 impl Session {
+    pub fn kind(&self) -> Kind {
+        self.location.kind()
+    }
+
     pub fn short_id(&self) -> String {
         if self.id.chars().count() > 14 {
             let mut out: String = self.id.chars().take(12).collect();
@@ -58,6 +136,118 @@ struct IndexEntry {
     model: Option<String>,
 }
 
+/// Titles that had to be scraped out of a log, remembered until that log
+/// changes.
+///
+/// The durable session log stays authoritative: an entry is only reused while
+/// both its size and its mtime still match, so any append — including a rename
+/// made outside this tool — sends the session back through `derive_title`.
+/// Without it every start of the TUI (and every `R`) re-reads whole logs just
+/// to learn a title that has not changed.
+#[derive(Default)]
+struct TitleCache {
+    entries: HashMap<String, CachedTitle>,
+    dirty: bool,
+}
+
+#[derive(Clone)]
+struct CachedTitle {
+    mtime_ms: u64,
+    size: u64,
+    title: String,
+    source: String,
+}
+
+impl TitleCache {
+    fn path(data_dir: &Path) -> PathBuf {
+        data_dir.join("roster-titles.json")
+    }
+
+    fn load(data_dir: &Path) -> Self {
+        let mut cache = Self::default();
+        let Some(value) = crate::cache::read_json(&Self::path(data_dir)) else {
+            return cache;
+        };
+        let Some(entries) = value.get("entries").and_then(|item| item.as_object()) else {
+            return cache;
+        };
+        for (id, entry) in entries {
+            let (Some(mtime_ms), Some(size), Some(title)) = (
+                entry.get("mtime").and_then(|item| item.as_u64()),
+                entry.get("size").and_then(|item| item.as_u64()),
+                entry.get("title").and_then(|item| item.as_str()),
+            ) else {
+                continue;
+            };
+            // A rewrite is what bumps these numbers; anything else is noise.
+            if id.is_empty() || title.is_empty() {
+                continue;
+            }
+            let source = entry.get("source").and_then(|item| item.as_str()).unwrap_or("log");
+            cache.entries.insert(
+                id.clone(),
+                CachedTitle {
+                    mtime_ms,
+                    size,
+                    title: title.to_string(),
+                    source: source.to_string(),
+                },
+            );
+        }
+        cache
+    }
+
+    fn get(&self, id: &str, mtime_ms: u64, size: u64) -> Option<&CachedTitle> {
+        self.entries
+            .get(id)
+            .filter(|entry| entry.mtime_ms == mtime_ms && entry.size == size)
+    }
+
+    fn put(&mut self, id: &str, mtime_ms: u64, size: u64, title: &str, source: &str) {
+        let already_known = self.entries.get(id).is_some_and(|entry| {
+            entry.mtime_ms == mtime_ms && entry.size == size && entry.title == title && entry.source == source
+        });
+        if already_known {
+            return;
+        }
+        self.entries.insert(
+            id.to_string(),
+            CachedTitle {
+                mtime_ms,
+                size,
+                title: title.to_string(),
+                source: source.to_string(),
+            },
+        );
+        self.dirty = true;
+    }
+
+    fn save(&self, data_dir: &Path) {
+        if !self.dirty {
+            return;
+        }
+        let entries: serde_json::Map<String, Value> = self
+            .entries
+            .iter()
+            .map(|(id, entry)| {
+                let value = serde_json::json!({
+                    "mtime": entry.mtime_ms,
+                    "size": entry.size,
+                    "title": entry.title,
+                    "source": entry.source,
+                });
+                (id.clone(), value)
+            })
+            .collect();
+        let value = serde_json::json!({ "version": 1, "entries": entries });
+        // A cache that cannot be written is not an error; the next run just
+        // pays for the scan again.
+        if let Ok(bytes) = serde_json::to_vec_pretty(&value) {
+            let _ = crate::cache::write_atomic(&Self::path(data_dir), &bytes);
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct LoadResult {
     pub sessions: Vec<Session>,
@@ -68,6 +258,7 @@ pub struct LoadResult {
 pub fn load(paths: &Paths) -> LoadResult {
     let index = load_index(&paths.data_dir);
     let mounted = load_mounts(&paths.data_dir);
+    let mut titles = TitleCache::load(&paths.data_dir);
 
     let mut sessions = Vec::new();
     let mut errors = Vec::new();
@@ -106,7 +297,7 @@ pub fn load(paths: &Paths) -> LoadResult {
                 if seen.contains(&id) {
                     continue;
                 }
-                match read_session(root, &ws_name, &dir, &id, &index) {
+                match read_session(root, &ws_name, &dir, &id, &index, &mut titles) {
                     Ok(session) => {
                         seen.insert(id);
                         sessions.push(session);
@@ -117,7 +308,20 @@ pub fn load(paths: &Paths) -> LoadResult {
         }
     }
 
+    for data_dir in &paths.opencode_dirs {
+        let loaded = crate::opencode::load(data_dir);
+        for session in loaded.sessions {
+            // The same session can be reachable through more than one data
+            // directory; the first one wins, matching how DST roots behave.
+            if seen.insert(session.id.clone()) {
+                sessions.push(session);
+            }
+        }
+        errors.extend(loaded.errors);
+    }
+
     sessions.sort_by_key(|session| std::cmp::Reverse(session.mtime_ms));
+    titles.save(&paths.data_dir);
 
     LoadResult {
         sessions,
@@ -126,8 +330,15 @@ pub fn load(paths: &Paths) -> LoadResult {
     }
 }
 
-fn read_session(root: &Path, ws: &str, dir: &Path, id: &str, index: &HashMap<String, IndexEntry>) -> Result<Session> {
-    let (log_path, log_name, _version, compressed) = find_log(dir).ok_or_else(|| anyhow!("no session log found"))?;
+fn read_session(
+    root: &Path,
+    ws: &str,
+    dir: &Path,
+    id: &str,
+    index: &HashMap<String, IndexEntry>,
+    titles: &mut TitleCache,
+) -> Result<Session> {
+    let (log_path, log_name, _version, compressed) = find_log(dir).ok_or_else(|| anyhow!(t("err.no_log")))?;
     let bytes = fs::read(&log_path)?;
     let metadata = fs::metadata(&log_path)?;
     let size = metadata.len();
@@ -169,30 +380,37 @@ fn read_session(root: &Path, ws: &str, dir: &Path, id: &str, index: &HashMap<Str
 
     let (title, title_source, model) = if let Some(entry) = index.get(id) {
         (sanitize_title(&entry.title), entry.source.clone(), entry.model.clone())
-    } else if let Some((title, source)) = derive_title(&bytes, compressed) {
-        (sanitize_title(&title), source, None)
+    } else if let Some(cached) = titles.get(id, mtime_ms, size) {
+        (sanitize_title(&cached.title), cached.source.clone(), None)
     } else {
-        (fallback_title(&cwd), "fallback".to_string(), None)
+        let (title, source) = match derive_title(&bytes, compressed) {
+            Some((title, source)) => (sanitize_title(&title), source),
+            None => (fallback_title(&cwd), "fallback".to_string()),
+        };
+        titles.put(id, mtime_ms, size, &title, &source);
+        (title, source, None)
     };
 
     Ok(Session {
         id: id.to_string(),
-        root: root.to_path_buf(),
-        ws: ws.to_string(),
-        dir: dir.to_path_buf(),
-        log_path,
-        log_name,
-        compressed,
         cwd,
         created_at,
         mtime_ms,
-        size,
-        frames,
         title,
         title_source,
         parent,
         agent_preset,
         model,
+        location: Location::Dst {
+            root: root.to_path_buf(),
+            ws: ws.to_string(),
+            dir: dir.to_path_buf(),
+            log_path,
+            log_name,
+            compressed,
+            frames,
+            size,
+        },
     })
 }
 
@@ -249,61 +467,85 @@ fn parse_log_name(name: &str) -> Option<(u32, bool)> {
     Some((version.parse().ok()?, compressed))
 }
 
+/// The newest `session/title` event, else the first thing the user said.
+///
+/// Neither half reads the whole log. Titles are appended at the end — a rename
+/// *is* the last frame — so the container is walked backwards and stops at the
+/// first frame carrying one. A session that was never titled pays one forward
+/// pass to reach the opening prompt, which lives in the first event frame. Only
+/// a log with neither is still decompressed in full.
 fn derive_title(bytes: &[u8], compressed: bool) -> Option<(String, String)> {
-    let mut last_title: Option<String> = None;
-    let mut first_user: Option<String> = None;
-
-    if compressed {
-        let frames = scan_frames(bytes).ok()?;
-        for frame in &frames {
-            let Ok(plain) = decompress_frame(&bytes[frame.start..frame.end]) else {
-                continue;
-            };
-            scan_title_lines(&plain, &mut last_title, &mut first_user);
-        }
+    let frames = if compressed {
+        scan_frames(bytes).ok()?
     } else {
-        scan_title_lines(bytes, &mut last_title, &mut first_user);
-    }
+        Vec::new()
+    };
+
+    let last_title = if compressed {
+        frames.iter().rev().find_map(|frame| {
+            let plain = decompress_frame(&bytes[frame.start..frame.end]).ok()?;
+            last_title_in(&plain)
+        })
+    } else {
+        last_title_in(bytes)
+    };
 
     if let Some(title) = last_title {
-        Some((title, "log".to_string()))
-    } else {
-        first_user.map(|title| (title, "prompt".to_string()))
+        return Some((title, "log".to_string()));
     }
+
+    let first_user = if compressed {
+        frames.iter().find_map(|frame| {
+            let plain = decompress_frame(&bytes[frame.start..frame.end]).ok()?;
+            first_user_in(&plain)
+        })
+    } else {
+        first_user_in(bytes)
+    };
+
+    first_user.map(|title| (title, "prompt".to_string()))
 }
 
-fn scan_title_lines(plain: &[u8], last_title: &mut Option<String>, first_user: &mut Option<String>) {
+/// The last title event inside one frame's plain text.
+fn last_title_in(plain: &[u8]) -> Option<String> {
+    let mut found = None;
     for line in plain.split(|byte| *byte == b'\n') {
-        if line.len() < 10 {
-            continue;
+        if let Some(title) = title_of(line) {
+            found = Some(title);
         }
-        if !contains(line, b"session/title") && !contains(line, b"user/message") {
+    }
+    found
+}
+
+fn title_of(line: &[u8]) -> Option<String> {
+    if line.len() < 10 || !contains(line, b"session/title") {
+        return None;
+    }
+    let value = serde_json::from_slice::<Value>(line).ok()?;
+    if value.get("type").and_then(|item| item.as_str()) != Some("session/title") {
+        return None;
+    }
+    let title = value.get("data")?.get("title")?.as_str()?.trim();
+    (!title.is_empty()).then(|| title.to_string())
+}
+
+/// The first user message inside one frame's plain text.
+fn first_user_in(plain: &[u8]) -> Option<String> {
+    for line in plain.split(|byte| *byte == b'\n') {
+        if line.len() < 10 || !contains(line, b"user/message") {
             continue;
         }
         let Ok(value) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
-        match value.get("type").and_then(|item| item.as_str()) {
-            Some("session/title") => {
-                if let Some(title) = value
-                    .get("data")
-                    .and_then(|data| data.get("title"))
-                    .and_then(|item| item.as_str())
-                {
-                    let title = title.trim();
-                    if !title.is_empty() {
-                        *last_title = Some(title.to_string());
-                    }
-                }
-            }
-            Some("user/message") if first_user.is_none() => {
-                if let Some(text) = first_user_text(&value) {
-                    *first_user = Some(text);
-                }
-            }
-            _ => {}
+        if value.get("type").and_then(|item| item.as_str()) != Some("user/message") {
+            continue;
+        }
+        if let Some(text) = first_user_text(&value) {
+            return Some(text);
         }
     }
+    None
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -403,6 +645,7 @@ fn load_mounts(data_dir: &Path) -> HashMap<String, u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::zstd_frames::compress_frame;
 
     #[test]
     fn recognizes_generation_log_names() {
@@ -411,5 +654,136 @@ mod tests {
         assert_eq!(parse_log_name("session.v3.jsonl"), Some((3, false)));
         assert_eq!(parse_log_name("session.v0.jsonl.zstd"), None);
         assert_eq!(parse_log_name("session.migration.1.jsonl.zstd"), None);
+    }
+
+    /// Frame order still decides: scanning backwards must not stop at an older
+    /// title that sits in a later-numbered but still-earlier frame.
+    #[test]
+    fn the_newest_title_wins_across_frames() {
+        let header = br#"{"type":"session","cwd":"C:/x"}"#;
+        let early = br#"{"type":"session/title","seq":1,"data":{"title":"old"}}"#;
+        let late = br#"{"type":"session/title","seq":9,"data":{"title":"new"}}"#;
+
+        let container = container(&[header, early, late]);
+        assert_eq!(
+            derive_title(&container, true),
+            Some(("new".to_string(), "log".to_string()))
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_first_prompt_when_no_title_was_ever_written() {
+        let header = br#"{"type":"session","cwd":"C:/x"}"#;
+        let prompt = br#"{"type":"user/message","seq":0,"data":{"content":"hello there"}}"#;
+        let later = br#"{"type":"user/message","seq":5,"data":{"content":"not this one"}}"#;
+
+        let container = container(&[header, prompt, later]);
+        assert_eq!(
+            derive_title(&container, true),
+            Some(("hello there".to_string(), "prompt".to_string()))
+        );
+    }
+
+    #[test]
+    fn plain_logs_use_the_same_rules() {
+        let header = br#"{"type":"session","cwd":"C:/x"}"#;
+        let title = br#"{"type":"session/title","seq":2,"data":{"title":" plain "}}"#;
+
+        let mut log = Vec::new();
+        for line in [&header[..], &title[..]] {
+            log.extend_from_slice(line);
+            log.push(b'\n');
+        }
+        assert_eq!(
+            derive_title(&log, false),
+            Some(("plain".to_string(), "log".to_string()))
+        );
+    }
+
+    #[test]
+    fn the_title_cache_only_trusts_a_log_it_has_seen() {
+        let dir = std::env::temp_dir().join(format!("dstsm-titles-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut cache = TitleCache::load(&dir);
+        assert!(cache.get("s1", 100, 500).is_none());
+        cache.put("s1", 100, 500, "cached", "log");
+        assert!(cache.dirty);
+        cache.save(&dir);
+
+        let cache = TitleCache::load(&dir);
+        assert_eq!(
+            cache.get("s1", 100, 500).map(|entry| entry.title.as_str()),
+            Some("cached")
+        );
+        assert!(cache.get("s1", 101, 500).is_none(), "an appended log is never trusted");
+        assert!(cache.get("s1", 100, 501).is_none(), "a longer log is never trusted");
+        assert!(cache.get("s2", 100, 500).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unchanged_cache_is_not_rewritten() {
+        let dir = std::env::temp_dir().join(format!("dstsm-titles-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut cache = TitleCache::load(&dir);
+        cache.put("s1", 1, 2, "t", "log");
+        cache.save(&dir);
+
+        let mut again = TitleCache::load(&dir);
+        again.put("s1", 1, 2, "t", "log");
+        assert!(!again.dirty, "identical data must not rewrite the file");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_second_load_reads_the_title_from_the_cache() {
+        let base = std::env::temp_dir().join(format!("dstsm-store-{}", uuid::Uuid::new_v4()));
+        let root = base.join("sessions");
+        let dir = root.join("--E-code-x--").join("sess-1");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut log = Vec::new();
+        for line in [
+            &br#"{"type":"session","version":4,"id":"sess-1","createdAt":1,"cwd":"E:/code/x"}"#[..],
+            &br#"{"type":"session/title","seq":1,"data":{"title":"scraped"}}"#[..],
+        ] {
+            log.extend_from_slice(line);
+            log.push(b'\n');
+        }
+        std::fs::write(dir.join("session.v4.jsonl"), &log).unwrap();
+
+        let paths = Paths {
+            dsh_home: base.join("dsh"),
+            data_dir: base.join("data"),
+            session_roots: vec![root],
+            opencode_dirs: Vec::new(),
+            trash_dir: base.join("trash"),
+        };
+
+        let first = load(&paths);
+        assert_eq!(first.sessions[0].title, "scraped");
+        assert_eq!(first.sessions[0].title_source, "log");
+        assert!(TitleCache::path(&paths.data_dir).exists(), "the scrape is remembered");
+
+        let second = load(&paths);
+        assert_eq!(second.sessions[0].title, "scraped");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// One zstd frame per line, the way DSH writes a log.
+    fn container(lines: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for line in lines {
+            let mut encoded = line.to_vec();
+            encoded.push(b'\n');
+            out.extend_from_slice(&compress_frame(&encoded).unwrap());
+        }
+        assert_eq!(scan_frames(&out).unwrap().len(), lines.len());
+        out
     }
 }

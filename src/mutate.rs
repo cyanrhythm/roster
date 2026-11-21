@@ -1,9 +1,9 @@
-//! Session mutations: rename (append a title frame), delete (move to trash),
-//! and workspace change (rewrite header cwd + move the session directory).
+//! Session mutations, dispatched on how the session is stored: DST sessions are
+//! files on disk, opencode sessions are rows in a shared SQLite database.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Result};
@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::cache;
 use crate::i18n::{t, tf};
 use crate::paths::Paths;
-use crate::store::Session;
+use crate::store::{Location, Session};
 use crate::zstd_frames::{compress_frame, decompress_frame, scan_frames};
 
 pub fn rename(paths: &Paths, session: &Session, title: &str) -> Result<()> {
@@ -20,9 +20,15 @@ pub fn rename(paths: &Paths, session: &Session, title: &str) -> Result<()> {
     if title.is_empty() {
         bail!(t("err.title_empty"));
     }
+    let Location::Dst {
+        log_path, compressed, ..
+    } = &session.location
+    else {
+        return crate::opencode::rename(session, title);
+    };
 
-    let bytes = fs::read(&session.log_path)?;
-    let last_seq = last_seq(&bytes, session.compressed)?;
+    let bytes = fs::read(log_path)?;
+    let last_seq = last_seq(&bytes, *compressed)?;
     let next_seq = last_seq.map(|seq| seq + 1).unwrap_or(0);
 
     let event = json!({
@@ -37,13 +43,9 @@ pub fn rename(paths: &Paths, session: &Session, title: &str) -> Result<()> {
     });
     let mut line = serde_json::to_vec(&event)?;
     line.push(b'\n');
-    let frame = if session.compressed {
-        compress_frame(&line)?
-    } else {
-        line
-    };
+    let frame = if *compressed { compress_frame(&line)? } else { line };
 
-    let mut file = OpenOptions::new().append(true).open(&session.log_path)?;
+    let mut file = OpenOptions::new().append(true).open(log_path)?;
     file.write_all(&frame)?;
     file.flush()?;
     file.sync_all()?;
@@ -53,56 +55,80 @@ pub fn rename(paths: &Paths, session: &Session, title: &str) -> Result<()> {
 }
 
 pub fn delete(paths: &Paths, session: &Session) -> Result<PathBuf> {
+    let Location::Dst { dir, ws, .. } = &session.location else {
+        return crate::opencode::delete(paths, session);
+    };
+
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let target = paths.trash_dir.join(stamp).join(&session.ws).join(&session.id);
+    let target = paths.trash_dir.join(stamp).join(ws).join(&session.id);
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::rename(&session.dir, &target)
-        .map_err(|error| anyhow!(tf("err.trash_move", &[("error", &error.to_string())])))?;
+    fs::rename(dir, &target).map_err(|error| anyhow!(tf("err.trash_move", &[("error", &error.to_string())])))?;
 
     cache::delete_everywhere(paths, &session.id);
     Ok(target)
 }
 
 pub fn change_workspace(paths: &Paths, session: &Session, new_cwd: &str) -> Result<String> {
+    let Location::Dst {
+        root,
+        dir,
+        log_path,
+        log_name,
+        compressed,
+        ..
+    } = &session.location
+    else {
+        return crate::opencode::change_workspace(session, new_cwd);
+    };
+
     let new_cwd = normalize_cwd(new_cwd);
     if new_cwd.is_empty() {
         bail!(t("err.cwd_empty"));
     }
-    if !is_absolute(&new_cwd) {
+    if !Path::new(&new_cwd).is_absolute() {
         bail!(t("err.cwd_absolute"));
     }
     if new_cwd == session.cwd {
         return Ok(new_cwd);
     }
 
-    let key = project_key(&new_cwd);
-    let new_dir = session.root.join(&key).join(&session.id);
+    // Build the new log in memory first: everything that can reject a malformed
+    // file happens before the session is touched, so afterwards only I/O can
+    // fail and the rollback window stays as narrow as it gets.
+    let bytes = fs::read(log_path)?;
+    let rewritten = rewrite_header_bytes(&bytes, *compressed, &new_cwd)?;
 
-    if new_dir == session.dir {
-        let bytes = fs::read(&session.log_path)?;
-        let rewritten = rewrite_header_bytes(&bytes, session.compressed, &new_cwd)?;
-        cache::write_atomic(&session.log_path, &rewritten)?;
+    let key = project_key(&new_cwd);
+    let new_dir = root.join(&key).join(&session.id);
+
+    if new_dir == *dir {
+        cache::write_atomic(log_path, &rewritten)?;
     } else {
         if new_dir.exists() {
             bail!(tf("err.target_exists", &[("path", &new_dir.display().to_string())]));
         }
-        let parent = new_dir.parent().ok_or_else(|| anyhow!("invalid target directory"))?;
+        let parent = new_dir.parent().ok_or_else(|| anyhow!(t("err.invalid_target")))?;
         fs::create_dir_all(parent)?;
 
-        fs::rename(&session.dir, &new_dir).map_err(|error| anyhow!("cannot move session directory: {error}"))?;
+        fs::rename(dir, &new_dir).map_err(|error| anyhow!(tf("err.dir_move", &[("error", &error.to_string())])))?;
 
-        let new_log = new_dir.join(&session.log_name);
-        let rewrite = (|| -> Result<()> {
-            let bytes = fs::read(&new_log)?;
-            let rewritten = rewrite_header_bytes(&bytes, session.compressed, &new_cwd)?;
-            cache::write_atomic(&new_log, &rewritten)
-        })();
-
-        if let Err(error) = rewrite {
-            let _ = fs::rename(&new_dir, &session.dir);
-            return Err(error);
+        let new_log = new_dir.join(log_name);
+        if let Err(error) = cache::write_atomic(&new_log, &rewritten) {
+            // Move it back, but never hide the original failure: if that also
+            // fails the session is stranded at `new_dir` with a stale header,
+            // and the message has to say where it went.
+            return Err(match fs::rename(&new_dir, dir) {
+                Ok(()) => error,
+                Err(rollback) => anyhow!(tf(
+                    "err.rollback_failed",
+                    &[
+                        ("path", &new_dir.display().to_string()),
+                        ("error", &format!("{error}; rollback: {rollback}")),
+                    ],
+                )),
+            });
         }
     }
 
@@ -179,13 +205,15 @@ fn scan_seq_lines(plain: &[u8], maximum: &mut Option<u64>) {
     }
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
 }
 
+/// Trim what a paste tends to drag along and settle on one separator, so that
+/// `C:/code/Siren/` and `C:\code\Siren` compare equal.
 pub fn normalize_cwd(input: &str) -> String {
     let mut value = input.trim().trim_matches('"').to_string();
     if cfg!(windows) {
@@ -199,19 +227,6 @@ pub fn normalize_cwd(input: &str) -> String {
         }
     }
     value
-}
-
-fn is_absolute(path: &str) -> bool {
-    if cfg!(windows) {
-        let bytes = path.as_bytes();
-        (bytes.len() >= 3
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && (bytes[2] == b'\\' || bytes[2] == b'/'))
-            || path.starts_with("\\\\")
-    } else {
-        path.starts_with('/')
-    }
 }
 
 /// Reproduce the DSH project directory key: separators collapse to `-`, other
@@ -259,6 +274,7 @@ pub fn project_key(cwd: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store;
 
     #[test]
     fn project_key_matches_dsh_encoding() {
@@ -286,5 +302,68 @@ mod tests {
             &rewritten[frames[0].end..],
             &container[scan_frames(&container).unwrap()[0].end..]
         );
+    }
+
+    /// A real tree on disk, so the directory move and the header rewrite are
+    /// checked together instead of against a hand-built `Session`.
+    #[test]
+    fn moves_the_workspace_directory_and_rewrites_the_header() {
+        let base = std::env::temp_dir().join(format!("dstsm-mutate-{}", uuid::Uuid::new_v4()));
+        let root = base.join("sessions");
+        let (old_cwd, new_cwd) = workspace_pair();
+        let log_name = "session.v4.jsonl.zstd";
+
+        let from = root.join(project_key(&old_cwd)).join("sess-1");
+        fs::create_dir_all(&from).unwrap();
+        let mut header = serde_json::to_vec(&json!({
+            "type": "session",
+            "version": 4,
+            "id": "sess-1",
+            "createdAt": 1,
+            "cwd": old_cwd,
+        }))
+        .unwrap();
+        header.push(b'\n');
+        let mut body = br#"{"type":"assistant/message","seq":1}"#.to_vec();
+        body.push(b'\n');
+        let mut container = compress_frame(&header).unwrap();
+        container.extend_from_slice(&compress_frame(&body).unwrap());
+        fs::write(from.join(log_name), &container).unwrap();
+
+        let paths = Paths {
+            dsh_home: base.join("dsh"),
+            data_dir: base.join("data"),
+            session_roots: vec![root.clone()],
+            opencode_dirs: Vec::new(),
+            trash_dir: base.join("trash"),
+        };
+        let loaded = store::load(&paths);
+        assert_eq!(loaded.sessions.len(), 1);
+        let session = loaded.sessions[0].clone();
+
+        // A pasted path may carry a trailing separator; the move must not care.
+        let separator = if cfg!(windows) { '\\' } else { '/' };
+        let moved = change_workspace(&paths, &session, &format!("{new_cwd}{separator}")).unwrap();
+        assert_eq!(moved, new_cwd);
+
+        assert!(!from.exists(), "the old directory is gone");
+        let to = root.join(project_key(&moved)).join("sess-1");
+        let bytes = fs::read(to.join(log_name)).unwrap();
+        let frames = scan_frames(&bytes).unwrap();
+        assert_eq!(frames.len(), 2, "the body frame travels along");
+
+        let plain = decompress_frame(&bytes[frames[0].start..frames[0].end]).unwrap();
+        let header: Value = serde_json::from_slice(&plain).unwrap();
+        assert_eq!(header["cwd"], json!(moved));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn workspace_pair() -> (String, String) {
+        if cfg!(windows) {
+            (r"E:\code\Old Place".to_string(), r"E:\code\New".to_string())
+        } else {
+            ("/code/old place".to_string(), "/code/new".to_string())
+        }
     }
 }

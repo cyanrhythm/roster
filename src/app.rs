@@ -7,7 +7,7 @@ use crate::i18n;
 use crate::mutate;
 use crate::paths::Paths;
 use crate::settings;
-use crate::store::{self, Session};
+use crate::store::{self, Kind, Session};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -35,11 +35,13 @@ pub struct App {
     pub mounted: HashMap<String, u32>,
     pub errors: Vec<String>,
     pub language_choice: Option<i18n::Language>,
+    /// Which source to show; `None` shows every one.
+    pub source: Option<Kind>,
     pub quit: bool,
 }
 
 impl App {
-    pub fn new(paths: Paths, language_choice: Option<i18n::Language>) -> Self {
+    pub fn new(paths: Paths, language_choice: Option<i18n::Language>, source: Option<Kind>) -> Self {
         let mut app = Self {
             paths,
             sessions: Vec::new(),
@@ -56,10 +58,28 @@ impl App {
             mounted: HashMap::new(),
             errors: Vec::new(),
             language_choice,
+            source,
             quit: false,
         };
         app.reload(None);
         app
+    }
+
+    /// How many sessions of each source were loaded, filter or not.
+    pub fn source_counts(&self) -> (usize, usize) {
+        self.sessions
+            .iter()
+            .fold((0, 0), |(dst, opencode), session| match session.kind() {
+                Kind::Dst => (dst + 1, opencode),
+                Kind::Opencode => (dst, opencode + 1),
+            })
+    }
+
+    pub fn source_label(&self) -> String {
+        match self.source {
+            None => i18n::t("source.all"),
+            Some(kind) => i18n::t(kind.badge_key()),
+        }
     }
 
     pub fn reload(&mut self, keep_id: Option<String>) {
@@ -89,6 +109,7 @@ impl App {
             .sessions
             .iter()
             .enumerate()
+            .filter(|(_, session)| self.source.is_none_or(|kind| kind == session.kind()))
             .filter(|(_, session)| {
                 needle.is_empty()
                     || session.title.to_lowercase().contains(&needle)
@@ -251,6 +272,7 @@ impl App {
                 self.reload(self.current().map(|session| session.id.clone()));
                 self.set_info(i18n::t("msg.reloaded"));
             }
+            KeyCode::Char('s') => self.cycle_source(),
             KeyCode::Char('L') => self.toggle_language(),
             KeyCode::Char('/') => {
                 self.filter_backup = self.filter.clone();
@@ -302,6 +324,13 @@ impl App {
             KeyCode::Right => self.move_right(),
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.input.len(),
+            KeyCode::Char(character)
+                if key.modifiers.contains(KeyModifiers::CONTROL) && character.eq_ignore_ascii_case(&'w') =>
+            {
+                self.clear_word();
+                self.filter = self.input.clone();
+                self.rebuild_visible();
+            }
             KeyCode::Char(character)
                 if key.modifiers.contains(KeyModifiers::CONTROL) && character.eq_ignore_ascii_case(&'u') =>
             {
@@ -384,6 +413,18 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// all → dst → opencode → all.
+    fn cycle_source(&mut self) {
+        self.source = match self.source {
+            None => Some(Kind::Dst),
+            Some(Kind::Dst) => Some(Kind::Opencode),
+            Some(Kind::Opencode) => None,
+        };
+        self.rebuild_visible();
+        let label = self.source_label();
+        self.set_info(i18n::tf("msg.source", &[("label", &label)]));
     }
 
     fn toggle_language(&mut self) {

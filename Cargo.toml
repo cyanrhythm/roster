@@ -1,14 +1,15 @@
 [package]
-name = "dst-session-manager"
-version = "0.1.0"
+name = "roster"
+version = "0.2.0"
 edition = "2021"
-description = "TUI manager for DST (dsh-tui) sessions"
+description = "TUI manager for agent sessions (DST / dsh-tui and opencode)"
 
 [dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 crossterm = "0.28"
 ratatui = "0.29"
+rusqlite = { version = "0.43.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -18,3 +19,6 @@ zstd = "0.14"
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+[build-dependencies]
+winres = "0.1.12"

@@ -213,8 +213,8 @@ mod tests {
 
     #[test]
     fn a_readable_string_comes_back_in_both_languages() {
-        assert_eq!(t_in(Language::Chinese, "app.title"), "DST 会话管理器");
-        assert_eq!(t_in(Language::English, "app.title"), "DST Session Manager");
+        assert_eq!(t_in(Language::Chinese, "app.title"), "Agent 会话管理器");
+        assert_eq!(t_in(Language::English, "app.title"), "Agent Session Manager");
     }
 
     #[test]
@@ -257,9 +257,9 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         let before = language();
         set(Language::English);
-        assert_eq!(t("app.title"), "DST Session Manager");
+        assert_eq!(t("app.title"), "Agent Session Manager");
         set(Language::Chinese);
-        assert_eq!(t("app.title"), "DST 会话管理器");
+        assert_eq!(t("app.title"), "Agent 会话管理器");
         set(before);
     }
 }

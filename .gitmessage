@@ -12,7 +12,7 @@
 # ── type ─────────────────────────────────────────────────────────
 #   feat      新功能
 #   fix       修复缺陷
-#   perf      性能（启动耗时、常驻内存、帧率、包体）
+#   perf      性能（启动耗时、扫描耗时、常驻内存）
 #   refactor  重构，不改变外部行为
 #   docs      文档
 #   test      测试
@@ -23,29 +23,41 @@
 #
 # 破坏性变更在 type 后加 `!`，并在页脚写 BREAKING CHANGE: 说明影响。
 #
-# ── scope（按 workspace crate / 平台）────────────────────────────
-#   app         GPUI 视图与页面
-#   design      设计 token、主题、组件样式
-#   core-client Core 的 JSON-RPC 客户端
-#   lifecycle   进程监督与生命周期收敛
-#   domain      配置模型、profile 构建、override 规则
-#   storage     SQLite 与数据库迁移
-#   platform    托盘 / 窗口 / 系统代理 / SSID / 自启 / 单实例
-#   ipc         进程间通信与帧协议
-#   editor      YAML / Clash 脚本编辑器
-#   i18n        多语言文案
-#   windows     Windows 专属实现
-#   macos       macOS 专属实现
-#   linux       Linux 专属实现
-#   deps        依赖升级
-#   release     版本号与发版流程
-#   repo        仓库级约定（.gitmessage、hooks、模板）
+# ── scope（按模块）──────────────────────────────────────────────
+#   frames     zstd 帧扫描、解压、编码（src/zstd_frames.rs）
+#   store      统一数据模型、DST 会话发现、header 解析、标题推导与缓存
+#   opencode   SQLite 读取与事件日志写入（src/opencode.rs）
+#   mutate     写操作分发：重命名、删除、改工作区
+#   cache      同步 dsh-tui 的派生缓存与偏好文件
+#   paths      目录发现与根目录优先级
+#   app        状态机、按键、输入编辑、来源筛选
+#   ui         TUI 渲染与布局
+#   i18n       文案与语言切换（含 locales/*.yml）
+#   cli        参数解析与 --list/--rename/--delete/--set-cwd/--source
+#   settings   本工具自己的偏好（agent-session-manager.json）
+#   repo       仓库级约定（.gitmessage、hooks、模板）
+#   deps       依赖升级
+#   release    版本号与发版流程
 #
 # ── 正文写什么 ───────────────────────────────────────────────────
 #   只写代码之外的信息：为什么这么改、被否决的方案、上游约束、
 #   用户可见的影响。不要复述 diff，也不要逐行解释改动。
 #   修 bug 时写清根因（触发条件 → 表面现象 → 真正的成因），
 #   而不是"修复了某处判断错误"。
+#
+# ── 这个仓库特有的几条 ───────────────────────────────────────────
+# · 格式是契约，不是实现细节。改动 src/zstd_frames.rs、
+#   project_key 的编码规则、或 header 重写方式时，正文要写清
+#   与 DSH 读端的兼容边界（"第一帧必须恰好一行"这条尤其别碰）。
+# · opencode 的 event 表才是真相，session 表只是物化视图。
+#   任何写操作都要行 + 事件一起改，且 seq 取聚合计数器下一个值
+#   （不是"最新 session 事件 +1"，中间夹着 message 事件会撞号）。
+# · 界面文案两边一起改：zh-CN.yml 是原文，en.yml 是译文。
+#   i18n::tests 会对比键集合与 %{占位符}，漏一个就红。
+# · 写操作的分工别弄反：会话存储是权威数据，失败要报错；
+#   cache 里那些派生文件尽力而为，失败只许吞掉，不许中断主操作。
+# · 标题推导有缓存（agent-session-manager-titles.json），
+#   失效条件是 size + mtime。动推导逻辑时记得让缓存跟着失效。
 #
 # ── 页脚 ─────────────────────────────────────────────────────────
 #   Closes #12                 关联并关闭 Issue
@@ -56,24 +68,24 @@
 #   这次改动，而不是哪个工具敲的字。人类协作者照常署名。
 #
 # ── 示例 ─────────────────────────────────────────────────────────
-#   feat(core-client): 复用 FlClash 的 JSON-RPC 帧协议
+#   feat(store): 标题推导按帧反向扫描并落盘缓存
 #
-#   Core 侧 55 个方法与 10 类事件保持不变，宿主只实现客户端。
-#   传输沿用 plugins/rust_api 的命名管道 / UDS 帧实现。
+#   之前每次启动都把没有 session-index 条目的会话整份解压一遍，
+#   18 MB 的历史要 300 ms，TUI 里按 R 刷新还要重来。
+#   现在标题按帧从尾部找、首条消息从头部找，两头都能提前收工；
+#   结果按 (size, mtime) 缓存到数据目录，二次启动 32 ms。
 #
-#   feat(app): 看板改用 gpui-kit Chart，去掉自绘折线
+#   perf(ui): 详情面板只渲染可见行
 #
-#   fix(lifecycle): 重启请求被更早的停止意图覆盖
+#   fix(mutate): 改工作区在移动目录后才解析 header
 #
-#   根因：stop 与 start 各自排队，新意图到达时旧队列仍在执行，
-#   状态机停在 stopped。改为按代际号丢弃过期请求，只应用最后一次意图。
+#   根因：移动先执行、header 重写后执行，遇到畸形日志时目录已经
+#   挪走，回滚失败就留下一个 cwd 对不上的会话。
+#   改为先在内存里造好新日志再动磁盘，回滚窗口缩到只剩一次写。
 #
 #   Closes #7
 #
-#   perf(app): 连接表改为行列双向虚拟化
-#
-#   此前一次性构建全部行，首屏 900ms、常驻多占 60 MiB，
-#   1 万行时滚动掉到 30fps。
+#   feat(i18n): 新增繁体中文文案表
 #
 # ── 启用 ─────────────────────────────────────────────────────────
 #   git config commit.template .gitmessage

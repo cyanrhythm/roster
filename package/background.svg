@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Siren">
+  <defs>
+    <!-- 极微径向渐变：中心略亮，边缘略暗 -->
+    <radialGradient id="bg" cx="50%" cy="42%" r="75%">
+      <stop offset="0%"  stop-color="#212329"/>
+      <stop offset="100%" stop-color="#151619"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 圆角方形底 -->
+  <rect x="0" y="0" width="1024" height="1024" rx="232" ry="232" fill="url(#bg)"/>
+</svg>
