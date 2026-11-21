@@ -7,12 +7,11 @@ app.title: "Roster 会话管理器"
 
 header.sessions: "%{count} 个会话"
 header.shown: "显示 %{count}"
-header.breakdown: "DST %{dst} · opencode %{opencode}"
 header.source: "来源: %{label}"
 header.filter: "筛选: %{query}"
 header.typing: "（输入中）"
 header.load_errors: "%{count} 个加载错误"
-header.root: "根目录: %{roots}"
+header.locations: "位置: %{locations}"
 header.language: "语言: %{label}"
 
 list.title: "会话 (%{count})"
@@ -119,7 +118,7 @@ time.days_ago: "%{count} 天前"
 cli.help: |
   roster %{version}
 
-  管理 dsh-tui（DST）与 opencode 的会话。
+  管理 dsh-tui（DST）与 opencode 的会话；新的 agent 通过实现 SessionSource 接入。
 
   用法：
       roster [选项]
@@ -130,8 +129,10 @@ cli.help: |
 
   选项：
       --source <all|dst|opencode>  只显示某个来源（默认 all）
-      --dsh-home <路径>       DSH 主目录（默认 $DSH_HOME 或 ~/.dsh）
-      --data-dir <路径>       dsh-tui 数据目录（默认 ~/.dsh-tui）
+      --source-dir <来源>=<路径>   给任意来源追加一个目录（可重复）
+      --source-home <来源>=<路径>  给任意来源指定主目录
+      --dsh-home <路径>       DST 主目录（默认 $DSH_HOME 或 ~/.dsh）
+      --data-dir <路径>       本工具的数据目录（默认 ~/.dsh-tui）
       --sessions-root <路径>  额外的 DST 会话根目录（可重复）
       --opencode-dir <路径>   opencode 数据目录（可重复，默认 ~/.local/share/opencode）
       --lang <auto|zh-CN|en>  界面语言（默认跟随系统或上次选择）
@@ -174,4 +175,5 @@ cli.err.missing_value: "参数 %{name} 缺少值"
 cli.err.no_session: "找不到匹配 %{needle} 的会话"
 cli.err.ambiguous: "会话 id 前缀 %{needle} 有歧义（%{count} 个匹配）"
 cli.err.invalid_language: "不支持的语言：%{value}（可用：auto、zh-CN、en）"
-cli.err.invalid_source: "不支持的来源：%{value}（可用：all、dst、opencode）"
+cli.err.invalid_source: "不支持的来源：%{value}（可用：all、%{sources}）"
+cli.err.source_path: "参数 %{value} 需要写成 <来源>=<路径>"

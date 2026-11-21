@@ -1,131 +1,238 @@
+//! DST / dsh-tui: one directory per session, a JSONL log inside it.
+
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use anyhow::{anyhow, Result};
-use serde_json::Value;
+use anyhow::{anyhow, bail, Result};
+use serde_json::{json, Value};
 
-use crate::i18n::t;
-use crate::paths::Paths;
-use crate::zstd_frames::{decompress_frame, scan_frames};
+use crate::cache;
+use crate::i18n::{t, tf};
+use crate::session::{human_size, DetailRow, Session};
+use crate::source::{now_ms, Env, SessionSource, SourceLoad};
+use crate::zstd_frames::{compress_frame, decompress_frame, scan_frames};
 
-/// Which agent wrote the session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    /// dsh / dsh-tui: JSONL logs, one directory per session.
-    Dst,
-    /// opencode: rows in a shared SQLite database.
-    Opencode,
-}
+/// The DST source: session logs written by dsh / dsh-tui.
+pub struct Dst;
 
-impl Kind {
-    /// The name used on the command line and in `--json`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Dst => "dst",
-            Self::Opencode => "opencode",
-        }
-    }
+const ID: &str = "dst";
 
-    pub fn badge_key(self) -> &'static str {
-        match self {
-            Self::Dst => "list.badge.dst",
-            Self::Opencode => "list.badge.opencode",
-        }
-    }
-
-    /// What the source is called inside a sentence ("source: opencode").
-    pub fn label_key(self) -> &'static str {
-        match self {
-            Self::Dst => "source.dst",
-            Self::Opencode => "source.opencode",
-        }
-    }
-
-    /// Accepts what a user is likely to type for `--source`.
-    pub fn from_arg(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "dst" | "dsh" | "dsh-tui" => Some(Self::Dst),
-            "opencode" | "oc" => Some(Self::Opencode),
-            _ => None,
-        }
-    }
-}
-
-/// Where a session is stored, which is also how it has to be mutated.
+/// What the DST source needs later to mutate one session.
 #[derive(Clone, Debug)]
-pub enum Location {
-    Dst {
-        root: PathBuf,
-        dir: PathBuf,
-        log_path: PathBuf,
-        log_name: String,
-        compressed: bool,
-        frames: usize,
-        size: u64,
-    },
-    Opencode {
-        db: PathBuf,
-        project_id: String,
-        /// The git worktree the project row points at, when it has one.
-        worktree: Option<String>,
-        messages: u64,
-        events: u64,
-        cost: f64,
-        tokens_in: u64,
-        tokens_out: u64,
-        tokens_reasoning: u64,
-        tokens_cache_read: u64,
-        tokens_cache_write: u64,
-    },
+pub(crate) struct DstData {
+    pub root: PathBuf,
+    pub dir: PathBuf,
+    pub log_path: PathBuf,
+    pub log_name: String,
+    pub compressed: bool,
+    pub frames: usize,
+    pub size: u64,
 }
 
-impl Location {
-    pub fn kind(&self) -> Kind {
-        match self {
-            Self::Dst { .. } => Kind::Dst,
-            Self::Opencode { .. } => Kind::Opencode,
+impl SessionSource for Dst {
+    fn id(&self) -> &'static str {
+        ID
+    }
+
+    fn label_key(&self) -> &'static str {
+        "source.dst"
+    }
+
+    fn badge_key(&self) -> &'static str {
+        "list.badge.dst"
+    }
+
+    fn accent(&self) -> [u8; 3] {
+        [0x12, 0x96, 0xdb]
+    }
+
+    fn locations(&self, env: &Env) -> Vec<String> {
+        let roots = roots(env);
+        // Only the ones that exist: a header listing four directories of which
+        // two were never created is just noise. When none exist, show all of
+        // them so it is obvious where sessions would be picked up from.
+        let existing: Vec<PathBuf> = roots.iter().filter(|root| root.is_dir()).cloned().collect();
+        let shown = if existing.is_empty() { roots } else { existing };
+        shown.iter().map(|root| root.display().to_string()).collect()
+    }
+
+    fn load(&self, env: &Env) -> SourceLoad {
+        load_sessions(env)
+    }
+
+    fn rename(&self, env: &Env, session: &Session, title: &str) -> Result<()> {
+        let title = title.trim();
+        if title.is_empty() {
+            bail!(t("err.title_empty"));
         }
+        let data = session.data::<DstData>()?;
+
+        let bytes = fs::read(&data.log_path)?;
+        let last_seq = last_seq(&bytes, data.compressed)?;
+        let next_seq = last_seq.map(|seq| seq + 1).unwrap_or(0);
+
+        // A rename is an appended event, never a rewrite: the reader replays it.
+        let event = json!({
+            "type": "session/title",
+            "seq": next_seq,
+            "time": now_ms(),
+            "data": {
+                "title": title,
+                "messageSeqs": [],
+                "source": { "kind": "user" }
+            }
+        });
+        let mut line = serde_json::to_vec(&event)?;
+        line.push(b'\n');
+        let frame = if data.compressed { compress_frame(&line)? } else { line };
+
+        let mut file = OpenOptions::new().append(true).open(&data.log_path)?;
+        file.write_all(&frame)?;
+        file.flush()?;
+        file.sync_all()?;
+
+        cache::rename_everywhere(&env.data_dir, &dsh_home(env), &session.id, title);
+        Ok(())
     }
-}
 
-#[derive(Clone, Debug)]
-pub struct Session {
-    pub id: String,
-    pub cwd: String,
-    pub created_at: u64,
-    pub mtime_ms: u64,
-    pub title: String,
-    pub title_source: String,
-    pub parent: Option<String>,
-    pub agent_preset: Option<String>,
-    pub model: Option<String>,
-    pub location: Location,
-}
+    fn delete(&self, env: &Env, session: &Session) -> Result<()> {
+        let data = session.data::<DstData>()?;
+        fs::remove_dir_all(&data.dir)
+            .map_err(|error| anyhow!(tf("err.delete_dir", &[("error", &error.to_string())])))?;
+        // The workspace directory is a bucket of sessions; it goes when the last
+        // one does, and `remove_dir` refuses while anything else is inside.
+        if let Some(parent) = data.dir.parent() {
+            let _ = fs::remove_dir(parent);
+        }
 
-impl Session {
-    pub fn kind(&self) -> Kind {
-        self.location.kind()
+        cache::delete_everywhere(&env.data_dir, &dsh_home(env), &session.id);
+        Ok(())
     }
 
-    pub fn short_id(&self) -> String {
-        if self.id.chars().count() > 14 {
-            let mut out: String = self.id.chars().take(12).collect();
-            out.push('…');
-            out
+    fn change_workspace(&self, env: &Env, session: &Session, new_cwd: &str) -> Result<String> {
+        let data = session.data::<DstData>()?;
+        let new_cwd = normalize_cwd(new_cwd);
+        if new_cwd.is_empty() {
+            bail!(t("err.cwd_empty"));
+        }
+        if !Path::new(&new_cwd).is_absolute() {
+            bail!(t("err.cwd_absolute"));
+        }
+        if new_cwd == session.cwd {
+            return Ok(new_cwd);
+        }
+
+        // Build the new log in memory first: everything that can reject a
+        // malformed file happens before the session is touched, so afterwards
+        // only I/O can fail and the rollback window stays as narrow as it gets.
+        let bytes = fs::read(&data.log_path)?;
+        let rewritten = rewrite_header_bytes(&bytes, data.compressed, &new_cwd)?;
+
+        let key = project_key(&new_cwd);
+        let new_dir = data.root.join(&key).join(&session.id);
+
+        if new_dir == data.dir {
+            cache::write_atomic(&data.log_path, &rewritten)?;
         } else {
-            self.id.clone()
+            if new_dir.exists() {
+                bail!(tf("err.target_exists", &[("path", &new_dir.display().to_string())]));
+            }
+            let parent = new_dir.parent().ok_or_else(|| anyhow!(t("err.invalid_target")))?;
+            fs::create_dir_all(parent)?;
+
+            fs::rename(&data.dir, &new_dir)
+                .map_err(|error| anyhow!(tf("err.dir_move", &[("error", &error.to_string())])))?;
+
+            let new_log = new_dir.join(&data.log_name);
+            if let Err(error) = cache::write_atomic(&new_log, &rewritten) {
+                // Move it back, but never hide the original failure: if that
+                // also fails the session is stranded at that path with a stale
+                // header, and the message has to say where it went.
+                return Err(match fs::rename(&new_dir, &data.dir) {
+                    Ok(()) => error,
+                    Err(rollback) => anyhow!(tf(
+                        "err.rollback_failed",
+                        &[
+                            ("path", &new_dir.display().to_string()),
+                            ("error", &format!("{error}; rollback: {rollback}")),
+                        ],
+                    )),
+                });
+            }
+        }
+
+        cache::move_everywhere(&env.data_dir, &dsh_home(env), &session.id, &session.cwd, &new_cwd);
+        Ok(new_cwd)
+    }
+
+    fn detail(&self, session: &Session) -> Vec<DetailRow> {
+        let Ok(data) = session.data::<DstData>() else {
+            return Vec::new();
+        };
+        let encoding = if data.compressed {
+            t("detail.encoding.zstd")
+        } else {
+            t("detail.encoding.plain")
+        };
+        vec![
+            DetailRow::new(t("detail.size"), human_size(data.size)),
+            DetailRow::new(
+                t("detail.log"),
+                tf(
+                    "detail.log_value",
+                    &[
+                        ("name", &data.log_name),
+                        ("encoding", &encoding),
+                        ("count", &data.frames.to_string()),
+                    ],
+                ),
+            ),
+            DetailRow::new(t("detail.dir"), data.dir.display().to_string()),
+        ]
+    }
+
+    fn measurement(&self, session: &Session) -> String {
+        match session.data::<DstData>() {
+            Ok(data) => human_size(data.size),
+            Err(_) => String::new(),
         }
     }
 
-    pub fn display_title(&self) -> String {
-        if self.title.trim().is_empty() {
-            crate::i18n::t("common.untitled")
-        } else {
-            self.title.clone()
+    fn json_fields(&self, session: &Session) -> serde_json::Map<String, Value> {
+        let mut fields = serde_json::Map::new();
+        if let Ok(data) = session.data::<DstData>() {
+            fields.insert("root".to_string(), json!(data.root.display().to_string()));
+            fields.insert("dir".to_string(), json!(data.dir.display().to_string()));
+            fields.insert("log".to_string(), json!(data.log_path.display().to_string()));
+            fields.insert("logName".to_string(), json!(data.log_name));
+            fields.insert("compressed".to_string(), json!(data.compressed));
+            fields.insert("frames".to_string(), json!(data.frames));
+            fields.insert("size".to_string(), json!(data.size));
         }
+        fields
     }
+}
+
+/// `--dsh-home`, `$DSH_HOME`, then `~/.dsh`.
+fn dsh_home(env: &Env) -> PathBuf {
+    env.home_for(ID)
+        .map(Path::to_path_buf)
+        .or_else(|| env.env_path("DSH_HOME"))
+        .unwrap_or_else(|| env.home.join(".dsh"))
+}
+
+/// Every directory that may contain `<workspace>/<session>/` trees.
+fn roots(env: &Env) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = env.dirs_for(ID).to_vec();
+    if let Some(root) = env.env_path("DSH_TUI_SESSION_ROOT") {
+        roots.push(root);
+    }
+    roots.push(dsh_home(env).join("sessions"));
+    roots.push(env.home.join(".dsh-tui").join("sessions"));
+    crate::source::dedupe_paths(roots)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -247,24 +354,17 @@ impl TitleCache {
     }
 }
 
-#[derive(Default)]
-pub struct LoadResult {
-    pub sessions: Vec<Session>,
-    pub errors: Vec<String>,
-    pub mounted: HashMap<String, u32>,
-}
-
-pub fn load(paths: &Paths) -> LoadResult {
-    let index = load_index(&paths.data_dir);
-    let mounted = load_mounts(&paths.data_dir);
-    let mut titles = TitleCache::load(&paths.data_dir);
+fn load_sessions(env: &Env) -> SourceLoad {
+    let index = load_index(&env.data_dir);
+    let mounted = load_mounts(&env.data_dir);
+    let mut titles = TitleCache::load(&env.data_dir);
 
     let mut sessions = Vec::new();
     let mut errors = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    for root in &paths.session_roots {
-        let workspaces = match fs::read_dir(root) {
+    for root in roots(env) {
+        let workspaces = match fs::read_dir(&root) {
             Ok(iter) => iter,
             Err(error) => {
                 if root.exists() {
@@ -295,7 +395,7 @@ pub fn load(paths: &Paths) -> LoadResult {
                 if seen.contains(&id) {
                     continue;
                 }
-                match read_session(root, &dir, &id, &index, &mut titles) {
+                match read_session(&root, &dir, &id, &index, &mounted, &mut titles) {
                     Ok(session) => {
                         seen.insert(id);
                         sessions.push(session);
@@ -306,26 +406,8 @@ pub fn load(paths: &Paths) -> LoadResult {
         }
     }
 
-    for data_dir in &paths.opencode_dirs {
-        let loaded = crate::opencode::load(data_dir);
-        for session in loaded.sessions {
-            // The same session can be reachable through more than one data
-            // directory; the first one wins, matching how DST roots behave.
-            if seen.insert(session.id.clone()) {
-                sessions.push(session);
-            }
-        }
-        errors.extend(loaded.errors);
-    }
-
-    sessions.sort_by_key(|session| std::cmp::Reverse(session.mtime_ms));
-    titles.save(&paths.data_dir);
-
-    LoadResult {
-        sessions,
-        errors,
-        mounted,
-    }
+    titles.save(&env.data_dir);
+    SourceLoad { sessions, errors }
 }
 
 fn read_session(
@@ -333,6 +415,7 @@ fn read_session(
     dir: &Path,
     id: &str,
     index: &HashMap<String, IndexEntry>,
+    mounted: &HashMap<String, u32>,
     titles: &mut TitleCache,
 ) -> Result<Session> {
     let (log_path, log_name, _version, compressed) = find_log(dir).ok_or_else(|| anyhow!(t("err.no_log")))?;
@@ -389,6 +472,7 @@ fn read_session(
     };
 
     Ok(Session {
+        source: ID,
         id: id.to_string(),
         cwd,
         created_at,
@@ -398,7 +482,8 @@ fn read_session(
         parent,
         agent_preset,
         model,
-        location: Location::Dst {
+        mounted_pid: mounted.get(id).copied(),
+        data: std::sync::Arc::new(DstData {
             root: root.to_path_buf(),
             dir: dir.to_path_buf(),
             log_path,
@@ -406,7 +491,7 @@ fn read_session(
             compressed,
             frames,
             size,
-        },
+        }),
     })
 }
 
@@ -638,6 +723,136 @@ fn load_mounts(data_dir: &Path) -> HashMap<String, u32> {
     map
 }
 
+/// Rewrites only the header frame, leaving every event frame byte-for-byte as
+/// it was. The header must stay the first frame and exactly one line.
+fn rewrite_header_bytes(bytes: &[u8], compressed: bool, new_cwd: &str) -> Result<Vec<u8>> {
+    if compressed {
+        let frames = scan_frames(bytes)?;
+        let first = frames.first().ok_or_else(|| anyhow!(t("err.empty_log")))?;
+        let plain = decompress_frame(&bytes[first.start..first.end])?;
+        let text = std::str::from_utf8(&plain)?;
+        let line = text.trim_end_matches('\n');
+        if line.is_empty() {
+            bail!(t("err.empty_header"));
+        }
+        if line.contains('\n') {
+            bail!(t("err.header_frame"));
+        }
+        let mut header: Value = serde_json::from_str(line)?;
+        header["cwd"] = Value::String(new_cwd.to_string());
+        let mut encoded = serde_json::to_vec(&header)?;
+        encoded.push(b'\n');
+        let frame = compress_frame(&encoded)?;
+        let mut out = frame;
+        out.extend_from_slice(&bytes[first.end..]);
+        Ok(out)
+    } else {
+        let end = bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(bytes.len());
+        let text = std::str::from_utf8(&bytes[..end])?;
+        let line = text.trim_end_matches('\n');
+        let mut header: Value = serde_json::from_str(line)?;
+        header["cwd"] = Value::String(new_cwd.to_string());
+        let mut out = serde_json::to_vec(&header)?;
+        out.push(b'\n');
+        out.extend_from_slice(&bytes[end..]);
+        Ok(out)
+    }
+}
+
+fn last_seq(bytes: &[u8], compressed: bool) -> Result<Option<u64>> {
+    let mut maximum: Option<u64> = None;
+
+    if compressed {
+        let frames = scan_frames(bytes)?;
+        for frame in frames {
+            let plain = decompress_frame(&bytes[frame.start..frame.end])?;
+            scan_seq_lines(&plain, &mut maximum);
+        }
+    } else {
+        scan_seq_lines(bytes, &mut maximum);
+    }
+
+    Ok(maximum)
+}
+
+fn scan_seq_lines(plain: &[u8], maximum: &mut Option<u64>) {
+    for line in plain.split(|byte| *byte == b'\n') {
+        if !line.windows(5).any(|window| window == b"\"seq\"") {
+            continue;
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        if let Some(seq) = value.get("seq").and_then(|item| item.as_u64()) {
+            let current = maximum.unwrap_or(seq);
+            *maximum = Some(current.max(seq));
+        }
+    }
+}
+
+/// Trim what a paste tends to drag along and settle on one separator, so that
+/// `C:/code/Siren/` and `C:\code\Siren` compare equal.
+fn normalize_cwd(input: &str) -> String {
+    let mut value = input.trim().trim_matches('"').to_string();
+    if cfg!(windows) {
+        value = value.replace('/', "\\");
+        while value.len() > 3 && value.ends_with('\\') {
+            value.pop();
+        }
+    } else {
+        while value.len() > 1 && value.ends_with('/') {
+            value.pop();
+        }
+    }
+    value
+}
+
+/// Reproduce the DSH project directory key: separators collapse to `-`, other
+/// unsafe code units become `~XXXX`, wrapped in `--...--`.
+fn project_key(cwd: &str) -> String {
+    if cwd.is_empty() {
+        return "--root--".to_string();
+    }
+    let dash = b'-' as u16;
+    let tilde = b'~' as u16;
+    let mut units: Vec<u16> = Vec::new();
+    let mut separator_run = false;
+    for code in cwd.encode_utf16() {
+        let character = char::from_u32(code as u32);
+        match character {
+            Some('/') | Some('\\') | Some(':') => {
+                if !separator_run {
+                    units.push(dash);
+                }
+                separator_run = true;
+            }
+            Some(ch) if ch != '~' && (ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-') => {
+                units.push(code);
+                separator_run = false;
+            }
+            _ => {
+                units.push(tilde);
+                for byte in format!("{code:04X}").bytes() {
+                    units.push(byte as u16);
+                }
+                separator_run = false;
+            }
+        }
+    }
+    while units.first() == Some(&dash) {
+        units.remove(0);
+    }
+    if units.is_empty() {
+        units.extend("root".bytes().map(|byte| byte as u16));
+    }
+    units.truncate(251);
+    format!("--{}--", String::from_utf16_lossy(&units))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,22 +967,170 @@ mod tests {
         }
         std::fs::write(dir.join("session.v4.jsonl"), &log).unwrap();
 
-        let paths = Paths {
-            dsh_home: base.join("dsh"),
-            data_dir: base.join("data"),
-            session_roots: vec![root],
-            opencode_dirs: Vec::new(),
-        };
+        let env = Env::isolated(base.join("home"), base.join("data")).with_dir(ID, root);
 
-        let first = load(&paths);
+        let first = Dst.load(&env);
         assert_eq!(first.sessions[0].title, "scraped");
         assert_eq!(first.sessions[0].title_source, "log");
-        assert!(TitleCache::path(&paths.data_dir).exists(), "the scrape is remembered");
+        assert!(TitleCache::path(&env.data_dir).exists(), "the scrape is remembered");
 
-        let second = load(&paths);
+        let second = Dst.load(&env);
         assert_eq!(second.sessions[0].title, "scraped");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn project_key_matches_dsh_encoding() {
+        assert_eq!(project_key(r"E:\home\alice\code\Siren"), "--E-home-alice-code-Siren--");
+        assert_eq!(project_key(r"E:\code\Rhine Music"), "--E-code-Rhine~0020Music--");
+    }
+
+    #[test]
+    fn rewrites_only_the_header_frame() {
+        let header = br#"{"type":"session","version":4,"id":"x","createdAt":1,"cwd":"C:/old","isSeeded":false,"delegationDepth":0}"#;
+        let mut header_frame = header.to_vec();
+        header_frame.push(b'\n');
+        let body = b"{\"type\":\"user/message\",\"seq\":0}\n";
+        let mut container = compress_frame(&header_frame).unwrap();
+        container.extend_from_slice(&compress_frame(body).unwrap());
+
+        let rewritten = rewrite_header_bytes(&container, true, "E:/new").unwrap();
+        let frames = scan_frames(&rewritten).unwrap();
+        assert_eq!(frames.len(), 2);
+
+        let plain = decompress_frame(&rewritten[frames[0].start..frames[0].end]).unwrap();
+        let value: Value = serde_json::from_slice(&plain).unwrap();
+        assert_eq!(value["cwd"], "E:/new");
+        assert_eq!(
+            &rewritten[frames[0].end..],
+            &container[scan_frames(&container).unwrap()[0].end..]
+        );
+    }
+
+    /// A real tree on disk, so the directory move and the header rewrite are
+    /// checked together instead of against a hand-built `Session`.
+    #[test]
+    fn moves_the_workspace_directory_and_rewrites_the_header() {
+        let base = std::env::temp_dir().join(format!("roster-mutate-{}", uuid::Uuid::new_v4()));
+        let root = base.join("sessions");
+        let (old_cwd, new_cwd) = workspace_pair();
+        let log_name = "session.v4.jsonl.zstd";
+
+        let from = root.join(project_key(&old_cwd)).join("sess-1");
+        fs::create_dir_all(&from).unwrap();
+        let mut header = serde_json::to_vec(&json!({
+            "type": "session",
+            "version": 4,
+            "id": "sess-1",
+            "createdAt": 1,
+            "cwd": old_cwd,
+        }))
+        .unwrap();
+        header.push(b'\n');
+        let mut body = br#"{"type":"assistant/message","seq":1}"#.to_vec();
+        body.push(b'\n');
+        let mut container = compress_frame(&header).unwrap();
+        container.extend_from_slice(&compress_frame(&body).unwrap());
+        fs::write(from.join(log_name), &container).unwrap();
+
+        let env = Env::isolated(base.join("home"), base.join("data")).with_dir(ID, root.clone());
+        let loaded = Dst.load(&env);
+        assert_eq!(loaded.sessions.len(), 1);
+        let session = loaded.sessions[0].clone();
+
+        // A pasted path may carry a trailing separator; the move must not care.
+        let separator = if cfg!(windows) { '\\' } else { '/' };
+        let moved = Dst
+            .change_workspace(&env, &session, &format!("{new_cwd}{separator}"))
+            .unwrap();
+        assert_eq!(moved, new_cwd);
+
+        assert!(!from.exists(), "the old directory is gone");
+        let to = root.join(project_key(&moved)).join("sess-1");
+        let bytes = fs::read(to.join(log_name)).unwrap();
+        let frames = scan_frames(&bytes).unwrap();
+        assert_eq!(frames.len(), 2, "the body frame travels along");
+
+        let plain = decompress_frame(&bytes[frames[0].start..frames[0].end]).unwrap();
+        let header: Value = serde_json::from_slice(&plain).unwrap();
+        assert_eq!(header["cwd"], json!(moved));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Deleting is final: the directory really goes, and so does the workspace
+    /// bucket once nothing else is left in it.
+    #[test]
+    fn deleting_a_session_removes_the_directory_and_the_empty_workspace() {
+        let base = std::env::temp_dir().join(format!("roster-mutate-{}", uuid::Uuid::new_v4()));
+        let root = base.join("sessions");
+        let cwd = if cfg!(windows) { r"E:\code\x" } else { "/code/x" };
+        let workspace = root.join(project_key(cwd));
+
+        for id in ["sess-1", "sess-2"] {
+            let dir = workspace.join(id);
+            fs::create_dir_all(&dir).unwrap();
+            let mut log = serde_json::to_vec(&json!({
+                "type": "session",
+                "version": 4,
+                "id": id,
+                "createdAt": 1,
+                "cwd": cwd,
+            }))
+            .unwrap();
+            log.push(b'\n');
+            log.extend_from_slice(br#"{"type":"assistant/message","seq":1}"#);
+            log.push(b'\n');
+            fs::write(dir.join("session.v4.jsonl"), &log).unwrap();
+        }
+
+        let env = Env::isolated(base.join("home"), base.join("data")).with_dir(ID, root.clone());
+
+        let loaded = Dst.load(&env);
+        assert_eq!(loaded.sessions.len(), 2);
+        let first = loaded.sessions.iter().find(|s| s.id == "sess-1").unwrap().clone();
+        Dst.delete(&env, &first).unwrap();
+
+        assert!(!workspace.join("sess-1").exists(), "the session directory is gone");
+        assert!(workspace.exists(), "a workspace with a sibling stays");
+        assert!(!env.data_dir.join("roster-trash").exists(), "nothing is moved aside");
+
+        let loaded = Dst.load(&env);
+        let second = loaded.sessions[0].clone();
+        Dst.delete(&env, &second).unwrap();
+        assert!(!workspace.exists(), "the empty workspace goes with its last session");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn detail_rows_come_from_the_log_not_the_core() {
+        let base = std::env::temp_dir().join(format!("roster-detail-{}", uuid::Uuid::new_v4()));
+        let root = base.join("sessions");
+        let dir = root.join("--E-code-x--").join("sess-1");
+        fs::create_dir_all(&dir).unwrap();
+        let mut log = br#"{"type":"session","version":4,"id":"sess-1","createdAt":1,"cwd":"E:/code/x"}"#.to_vec();
+        log.push(b'\n');
+        fs::write(dir.join("session.v4.jsonl"), &log).unwrap();
+
+        let env = Env::isolated(base.join("home"), base.join("data")).with_dir(ID, root);
+        let session = Dst.load(&env).sessions.remove(0);
+
+        let rows = Dst.detail(&session);
+        assert_eq!(rows.len(), 3, "size, log, dir");
+        assert!(!Dst.measurement(&session).is_empty());
+        assert_eq!(Dst.json_fields(&session)["logName"], json!("session.v4.jsonl"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn workspace_pair() -> (String, String) {
+        if cfg!(windows) {
+            (r"E:\code\Old Place".to_string(), r"E:\code\New".to_string())
+        } else {
+            ("/code/old place".to_string(), "/code/new".to_string())
+        }
     }
 
     /// One zstd frame per line, the way DSH writes a log.

@@ -1,11 +1,10 @@
 mod app;
 mod cache;
 mod i18n;
-mod mutate;
-mod opencode;
-mod paths;
+mod session;
 mod settings;
-mod store;
+mod source;
+mod sources;
 mod ui;
 mod zstd_frames;
 
@@ -17,16 +16,19 @@ use anyhow::{anyhow, bail, Result};
 use crossterm::event::{self, Event, KeyEventKind};
 
 use app::App;
-use paths::Paths;
-use store::{Kind, Location, Session};
+use session::Session;
+use source::{Env, Registry};
 
 #[derive(Default)]
 struct Cli {
     dsh_home: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     sessions_roots: Vec<PathBuf>,
-    opencode_dirs: Vec<PathBuf>,
-    source: Option<Kind>,
+    /// `--source-home <id>=<path>` and `--source-dir <id>=<path>` land here, so
+    /// a source added later needs no CLI changes.
+    source_homes: Vec<(String, PathBuf)>,
+    source_dirs: Vec<(String, PathBuf)>,
+    source: Option<String>,
     lang: Option<String>,
     list: bool,
     json: bool,
@@ -38,39 +40,47 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = parse_args()?;
-
-    let paths = Paths::discover(
-        cli.dsh_home.clone(),
-        cli.data_dir.clone(),
-        cli.sessions_roots.clone(),
-        cli.opencode_dirs.clone(),
-    );
-    let language_choice = init_language(&paths, cli.lang.as_deref())?;
+    let registry = sources::registry();
+    let env = build_env(&cli);
+    let language_choice = init_language(&env, cli.lang.as_deref())?;
 
     if cli.help {
         print_help();
         return Ok(());
     }
 
+    // `--source` is whatever the registry knows, including sources added later.
+    let source = match cli.source.as_deref() {
+        None | Some("all") => None,
+        Some(value) if value.eq_ignore_ascii_case("all") => None,
+        Some(value) => {
+            let ids = registry.ids().collect::<Vec<_>>().join("、");
+            let id = registry.get(value).map(|source| source.id()).ok_or_else(|| {
+                anyhow!(i18n::tf(
+                    "cli.err.invalid_source",
+                    &[("value", value), ("sources", &ids)]
+                ))
+            })?;
+            Some(id)
+        }
+    };
+
     if cli.list {
-        let result = store::load(&paths);
+        let result = registry.load(&env);
         let sessions: Vec<&Session> = result
             .sessions
             .iter()
-            .filter(|session| cli.source.is_none_or(|kind| kind == session.kind()))
+            .filter(|session| source.is_none_or(|id| id == session.source))
             .collect();
         if cli.json {
-            let rows: Vec<serde_json::Value> = sessions.iter().map(|session| session_json(session)).collect();
+            let rows: Vec<serde_json::Value> = sessions
+                .iter()
+                .map(|session| session_json(&registry, session))
+                .collect();
             println!("{}", serde_json::to_string_pretty(&rows)?);
         } else {
             for session in sessions {
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    session.id,
-                    session.cwd,
-                    session.title,
-                    session.kind().as_str()
-                );
+                println!("{}\t{}\t{}\t{}", session.id, session.cwd, session.title, session.source);
             }
         }
         for error in result.errors {
@@ -80,9 +90,9 @@ fn main() -> Result<()> {
     }
 
     if let Some((id, title)) = cli.rename {
-        let result = store::load(&paths);
+        let result = registry.load(&env);
         let session = find_session(&result.sessions, &id)?;
-        mutate::rename(&paths, session, &title)?;
+        registry.rename(&env, session, &title)?;
         println!(
             "{}",
             i18n::tf("cli.renamed", &[("id", &session.id), ("title", title.trim())],)
@@ -91,30 +101,30 @@ fn main() -> Result<()> {
     }
 
     if let Some(id) = cli.delete {
-        let result = store::load(&paths);
+        let result = registry.load(&env);
         let session = find_session(&result.sessions, &id)?;
-        mutate::delete(&paths, session)?;
+        registry.delete(&env, session)?;
         println!("{}", i18n::tf("cli.deleted", &[("id", &session.id)]));
         return Ok(());
     }
 
     if let Some((id, cwd)) = cli.set_cwd {
-        let result = store::load(&paths);
+        let result = registry.load(&env);
         let session = find_session(&result.sessions, &id)?;
-        let new_cwd = mutate::change_workspace(&paths, session, &cwd)?;
+        let new_cwd = registry.change_workspace(&env, session, &cwd)?;
         println!("{}", i18n::tf("cli.moved", &[("id", &session.id), ("cwd", &new_cwd)]));
         return Ok(());
     }
 
-    run_tui(paths, language_choice, cli.source)
+    run_tui(env, registry, language_choice, source)
 }
 
-/// The `--json` shape: one flat object, with the fields that only make sense
-/// for one source added on top.
-fn session_json(session: &Session) -> serde_json::Value {
+/// The `--json` shape: the fields every session has, plus whatever the source
+/// wants to add (log path, database path, token counts...).
+fn session_json(registry: &Registry, session: &Session) -> serde_json::Value {
     let mut value = serde_json::json!({
         "id": session.id,
-        "source": session.kind().as_str(),
+        "source": session.source,
         "title": session.title,
         "titleSource": session.title_source,
         "cwd": session.cwd,
@@ -124,67 +134,55 @@ fn session_json(session: &Session) -> serde_json::Value {
         "agent": session.agent_preset,
         "model": session.model,
     });
-    let object = value.as_object_mut().expect("a JSON object");
-    match &session.location {
-        Location::Dst {
-            root,
-            dir,
-            log_path,
-            log_name,
-            compressed,
-            frames,
-            size,
-            ..
-        } => {
-            object.insert("root".into(), serde_json::json!(root.display().to_string()));
-            object.insert("dir".into(), serde_json::json!(dir.display().to_string()));
-            object.insert("log".into(), serde_json::json!(log_path.display().to_string()));
-            object.insert("logName".into(), serde_json::json!(log_name));
-            object.insert("compressed".into(), serde_json::json!(compressed));
-            object.insert("frames".into(), serde_json::json!(frames));
-            object.insert("size".into(), serde_json::json!(size));
-        }
-        Location::Opencode {
-            db,
-            project_id,
-            worktree,
-            messages,
-            events,
-            cost,
-            tokens_in,
-            tokens_out,
-            tokens_reasoning,
-            tokens_cache_read,
-            tokens_cache_write,
-        } => {
-            object.insert("db".into(), serde_json::json!(db.display().to_string()));
-            object.insert("projectId".into(), serde_json::json!(project_id));
-            object.insert("worktree".into(), serde_json::json!(worktree));
-            object.insert("messages".into(), serde_json::json!(messages));
-            object.insert("events".into(), serde_json::json!(events));
-            object.insert("cost".into(), serde_json::json!(cost));
-            object.insert(
-                "tokens".into(),
-                serde_json::json!({
-                    "input": tokens_in,
-                    "output": tokens_out,
-                    "reasoning": tokens_reasoning,
-                    "cacheRead": tokens_cache_read,
-                    "cacheWrite": tokens_cache_write,
-                }),
-            );
+    if let Some(object) = value.as_object_mut() {
+        for (key, field) in registry.json_fields(session) {
+            object.insert(key, field);
         }
     }
     value
 }
 
+/// Resolves where every source should look, from the command line plus the
+/// defaults for each agent.
+fn build_env(cli: &Cli) -> Env {
+    let home = home_dir();
+    let data_dir = cli.data_dir.clone().unwrap_or_else(|| home.join(".dsh-tui"));
+    let mut env = Env::new(home, data_dir);
+
+    if let Some(path) = &cli.dsh_home {
+        env = env.with_home("dst", path.clone());
+    }
+    for path in &cli.sessions_roots {
+        env = env.with_dir("dst", path.clone());
+    }
+    for (source, path) in &cli.source_homes {
+        env = env.with_home(source.clone(), path.clone());
+    }
+    for (source, path) in &cli.source_dirs {
+        env = env.with_dir(source.clone(), path.clone());
+    }
+    env
+}
+
+fn home_dir() -> PathBuf {
+    let profile = if cfg!(windows) {
+        source::env_path("USERPROFILE")
+    } else {
+        None
+    };
+    profile
+        .or_else(|| source::env_path("HOME"))
+        .or_else(|| source::env_path("USERPROFILE"))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 /// Applies the startup language and returns the user's preference: `None`
 /// means "follow the system", `Some` means an explicit saved choice.
-fn init_language(paths: &Paths, explicit: Option<&str>) -> Result<Option<i18n::Language>> {
+fn init_language(env: &Env, explicit: Option<&str>) -> Result<Option<i18n::Language>> {
     // Start from the system so that even an argument error is readable.
     i18n::set(i18n::Language::detect());
 
-    let saved = settings::load_language(&paths.data_dir);
+    let saved = settings::load_language(&env.data_dir);
     let (language, choice) = match explicit {
         Some(value) if value.eq_ignore_ascii_case("auto") => (i18n::Language::detect(), None),
         Some(value) => {
@@ -199,7 +197,12 @@ fn init_language(paths: &Paths, explicit: Option<&str>) -> Result<Option<i18n::L
     Ok(choice)
 }
 
-fn run_tui(paths: Paths, language_choice: Option<i18n::Language>, source: Option<Kind>) -> Result<()> {
+fn run_tui(
+    env: Env,
+    registry: Registry,
+    language_choice: Option<i18n::Language>,
+    source: Option<&'static str>,
+) -> Result<()> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         ratatui::restore();
@@ -207,7 +210,7 @@ fn run_tui(paths: Paths, language_choice: Option<i18n::Language>, source: Option
     }));
 
     let mut terminal = ratatui::init();
-    let mut app = App::new(paths, language_choice, source);
+    let mut app = App::new(env, registry, language_choice, source);
 
     let outcome = (|| -> Result<()> {
         loop {
@@ -277,20 +280,15 @@ fn parse_args() -> Result<Cli> {
             "--sessions-root" => {
                 cli.sessions_roots.push(PathBuf::from(take("--sessions-root")?));
             }
-            "--opencode-dir" => {
-                cli.opencode_dirs.push(PathBuf::from(take("--opencode-dir")?));
+            "--source-dir" => {
+                cli.source_dirs
+                    .push(parse_source_path(&take("--source-dir <id=path>")?)?);
             }
-            "--source" => {
-                let value = take("--source <all|dst|opencode>")?;
-                cli.source = if value.eq_ignore_ascii_case("all") {
-                    None
-                } else {
-                    Some(
-                        Kind::from_arg(&value)
-                            .ok_or_else(|| anyhow!(i18n::tf("cli.err.invalid_source", &[("value", &value)])))?,
-                    )
-                };
+            "--source-home" => {
+                cli.source_homes
+                    .push(parse_source_path(&take("--source-home <id=path>")?)?);
             }
+            "--source" => cli.source = Some(take("--source <all|source>")?),
             "--rename" => {
                 let id = take("--rename <id>")?;
                 let title = take("--rename <title>")?;
@@ -306,6 +304,17 @@ fn parse_args() -> Result<Cli> {
         }
     }
     Ok(cli)
+}
+
+/// `<source>=<path>`, the shape `--source-dir` and `--source-home` accept.
+fn parse_source_path(value: &str) -> Result<(String, PathBuf)> {
+    let (source, path) = value
+        .split_once('=')
+        .ok_or_else(|| anyhow!(i18n::tf("cli.err.source_path", &[("value", value)])))?;
+    if source.trim().is_empty() || path.trim().is_empty() {
+        bail!("{}", i18n::tf("cli.err.source_path", &[("value", value)]));
+    }
+    Ok((source.trim().to_string(), PathBuf::from(path.trim())))
 }
 
 fn print_help() {

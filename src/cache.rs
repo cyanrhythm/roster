@@ -10,7 +10,12 @@ use anyhow::Result;
 use chrono::{SecondsFormat, Utc};
 use serde_json::{json, Value};
 
-use crate::paths::Paths;
+/// The two dsh-tui directories these helpers read and write.
+#[derive(Clone, Copy)]
+struct DshPaths<'a> {
+    data_dir: &'a Path,
+    dsh_home: &'a Path,
+}
 
 pub fn read_json(path: &Path) -> Option<Value> {
     let text = fs::read_to_string(path).ok()?;
@@ -41,12 +46,14 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     }
 }
 
-pub fn rename_everywhere(paths: &Paths, id: &str, title: &str) {
+pub fn rename_everywhere(data_dir: &Path, dsh_home: &Path, id: &str, title: &str) {
+    let paths = DshPaths { data_dir, dsh_home };
     rename_index(paths, id, title);
     rename_listings(paths, id, title);
 }
 
-pub fn delete_everywhere(paths: &Paths, id: &str) {
+pub fn delete_everywhere(data_dir: &Path, dsh_home: &Path, id: &str) {
+    let paths = DshPaths { data_dir, dsh_home };
     delete_index(paths, id);
     delete_listings(paths, id);
     delete_projcache(paths, id);
@@ -54,13 +61,14 @@ pub fn delete_everywhere(paths: &Paths, id: &str) {
     workspace_registry_update(paths, id, None);
 }
 
-pub fn move_everywhere(paths: &Paths, id: &str, old_cwd: &str, new_cwd: &str) {
+pub fn move_everywhere(data_dir: &Path, dsh_home: &Path, id: &str, old_cwd: &str, new_cwd: &str) {
+    let paths = DshPaths { data_dir, dsh_home };
     move_listings(paths, id, new_cwd);
     move_projcache(paths, id, new_cwd);
     workspace_registry_update(paths, id, Some((old_cwd, new_cwd)));
 }
 
-fn rename_index(paths: &Paths, id: &str, title: &str) {
+fn rename_index(paths: DshPaths, id: &str, title: &str) {
     let path = paths.data_dir.join("session-index.json");
     let Some(mut value) = read_json(&path) else {
         return;
@@ -82,7 +90,7 @@ fn rename_index(paths: &Paths, id: &str, title: &str) {
     }
 }
 
-fn delete_index(paths: &Paths, id: &str) {
+fn delete_index(paths: DshPaths, id: &str) {
     let path = paths.data_dir.join("session-index.json");
     let Some(mut value) = read_json(&path) else {
         return;
@@ -97,7 +105,7 @@ fn delete_index(paths: &Paths, id: &str) {
     }
 }
 
-fn listing_files(paths: &Paths) -> Vec<PathBuf> {
+fn listing_files(paths: DshPaths) -> Vec<PathBuf> {
     let dir = paths.data_dir.join("session-lists");
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
@@ -109,7 +117,7 @@ fn listing_files(paths: &Paths) -> Vec<PathBuf> {
         .collect()
 }
 
-fn rename_listings(paths: &Paths, id: &str, title: &str) {
+fn rename_listings(paths: DshPaths, id: &str, title: &str) {
     for path in listing_files(paths) {
         let Some(mut value) = read_json(&path) else {
             continue;
@@ -130,7 +138,7 @@ fn rename_listings(paths: &Paths, id: &str, title: &str) {
     }
 }
 
-fn delete_listings(paths: &Paths, id: &str) {
+fn delete_listings(paths: DshPaths, id: &str) {
     for path in listing_files(paths) {
         let Some(mut value) = read_json(&path) else {
             continue;
@@ -146,7 +154,7 @@ fn delete_listings(paths: &Paths, id: &str) {
     }
 }
 
-fn move_listings(paths: &Paths, id: &str, new_cwd: &str) {
+fn move_listings(paths: DshPaths, id: &str, new_cwd: &str) {
     for path in listing_files(paths) {
         let Some(mut value) = read_json(&path) else {
             continue;
@@ -167,7 +175,7 @@ fn move_listings(paths: &Paths, id: &str, new_cwd: &str) {
     }
 }
 
-fn projcache_dir(paths: &Paths) -> PathBuf {
+fn projcache_dir(paths: DshPaths) -> PathBuf {
     paths
         .dsh_home
         .join("storages")
@@ -179,7 +187,7 @@ fn projcache_matches(stem: &str, id: &str) -> bool {
     stem == id || stem == format!("session-{id}")
 }
 
-fn delete_projcache(paths: &Paths, id: &str) {
+fn delete_projcache(paths: DshPaths, id: &str) {
     let dir = projcache_dir(paths);
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -218,7 +226,7 @@ fn delete_projcache(paths: &Paths, id: &str) {
     }
 }
 
-fn move_projcache(paths: &Paths, id: &str, new_cwd: &str) {
+fn move_projcache(paths: DshPaths, id: &str, new_cwd: &str) {
     let dir = projcache_dir(paths);
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -270,7 +278,7 @@ fn set_identity_cwd(value: &mut Value, new_cwd: &str) -> bool {
     true
 }
 
-fn delete_prefs(paths: &Paths, id: &str) {
+fn delete_prefs(paths: DshPaths, id: &str) {
     let last_used = paths.data_dir.join("last-used.json");
     if let Some(mut value) = read_json(&last_used) {
         if value
@@ -342,7 +350,7 @@ fn delete_prefs(paths: &Paths, id: &str) {
     }
 }
 
-fn workspace_registry_update(paths: &Paths, id: &str, moved: Option<(&str, &str)>) {
+fn workspace_registry_update(paths: DshPaths, id: &str, moved: Option<(&str, &str)>) {
     let path = paths.dsh_home.join("storages").join("workspace.json");
     let Some(mut value) = read_json(&path) else {
         return;

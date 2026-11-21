@@ -5,12 +5,11 @@ app.title: "Roster Session Manager"
 
 header.sessions: "%{count} sessions"
 header.shown: "%{count} shown"
-header.breakdown: "DST %{dst} · opencode %{opencode}"
 header.source: "source: %{label}"
 header.filter: "filter: %{query}"
 header.typing: "(typing)"
 header.load_errors: "%{count} load errors"
-header.root: "root: %{roots}"
+header.locations: "location: %{locations}"
 header.language: "lang: %{label}"
 
 list.title: "Sessions (%{count})"
@@ -117,7 +116,7 @@ time.days_ago: "%{count} d ago"
 cli.help: |
   roster %{version}
 
-  Manage dsh-tui (DST) and opencode sessions.
+  Manage dsh-tui (DST) and opencode sessions; new agents plug in by implementing SessionSource.
 
   USAGE:
       roster [OPTIONS]
@@ -128,8 +127,10 @@ cli.help: |
 
   OPTIONS:
       --source <all|dst|opencode>  Show one source only (default: all)
-      --dsh-home <PATH>       DSH home (default: $DSH_HOME or ~/.dsh)
-      --data-dir <PATH>       dsh-tui data dir (default: ~/.dsh-tui)
+      --source-dir <SOURCE>=<PATH>  Add a directory for any source (repeatable)
+      --source-home <SOURCE>=<PATH> Override a source's home directory
+      --dsh-home <PATH>       DST home (default: $DSH_HOME or ~/.dsh)
+      --data-dir <PATH>       This tool's data dir (default: ~/.dsh-tui)
       --sessions-root <PATH>  Extra DST session root (repeatable)
       --opencode-dir <PATH>   opencode data dir (repeatable, ~/.local/share/opencode)
       --lang <auto|zh-CN|en>  UI language (default: system or last choice)
@@ -172,4 +173,5 @@ cli.err.missing_value: "missing value for %{name}"
 cli.err.no_session: "no session matching %{needle}"
 cli.err.ambiguous: "ambiguous session id prefix %{needle} (%{count} matches)"
 cli.err.invalid_language: "unsupported language: %{value} (use auto, zh-CN or en)"
-cli.err.invalid_source: "unsupported source: %{value} (use all, dst or opencode)"
+cli.err.invalid_source: "unsupported source: %{value} (use all or one of: %{sources})"
+cli.err.source_path: "%{value} must be written as <source>=<path>"

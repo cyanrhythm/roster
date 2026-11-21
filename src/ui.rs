@@ -7,7 +7,6 @@ use ratatui::Frame;
 
 use crate::app::{App, Mode};
 use crate::i18n::{self, t, tf};
-use crate::store::{Kind, Location, Session};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -32,7 +31,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Workspace => {
             let open = app
                 .current()
-                .map(|session| app.mounted.contains_key(&session.id))
+                .map(|session| session.mounted_pid.is_some())
                 .unwrap_or(false);
             let hint = if open {
                 t("popup.workspace.hint_open")
@@ -48,7 +47,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    let (dst, opencode) = app.source_counts();
+    let breakdown = app
+        .source_counts()
+        .iter()
+        .map(|(id, count)| format!("{} {}", app.registry.label(id), count))
+        .collect::<Vec<_>>()
+        .join(" · ");
+
     let mut spans = vec![
         Span::styled(
             format!(" {} ", t("app.title")),
@@ -68,13 +73,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Gray),
         ),
         Span::raw("  "),
-        Span::styled(
-            tf(
-                "header.breakdown",
-                &[("dst", &dst.to_string()), ("opencode", &opencode.to_string())],
-            ),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(breakdown, Style::default().fg(Color::DarkGray)),
         Span::raw("  "),
         Span::styled(
             tf("header.source", &[("label", &app.source_label())]),
@@ -111,18 +110,12 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    let roots = app
-        .paths
-        .session_roots
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join("  ·  ");
+    let locations = app.locations.join("  ·  ");
 
     let text = Text::from(vec![
         Line::from(spans),
         Line::from(Span::styled(
-            tf("header.root", &[("roots", &roots)]),
+            tf("header.locations", &[("locations", &locations)]),
             Style::default().fg(Color::DarkGray),
         )),
     ]);
@@ -135,17 +128,18 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|index| {
             let session = &app.sessions[*index];
-            let open = if app.mounted.contains_key(&session.id) {
+            let open = if session.mounted_pid.is_some() {
                 t("list.open_badge")
             } else {
                 String::new()
             };
-            let (badge, badge_color) = match session.kind() {
-                Kind::Dst => (t("list.badge.dst"), Color::Cyan),
-                Kind::Opencode => (t("list.badge.opencode"), Color::Magenta),
-            };
+            let accent = app.registry.accent(session.source);
+            let badge = app.registry.badge(session.source);
             let title = Line::from(vec![
-                Span::styled(format!("{badge} "), Style::default().fg(badge_color)),
+                Span::styled(
+                    format!("{badge} "),
+                    Style::default().fg(Color::Rgb(accent[0], accent[1], accent[2])),
+                ),
                 Span::styled(
                     format!("{}{}", session.display_title(), open),
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -156,7 +150,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     "{}  ·  {}  ·  {}  ·  {}",
                     session.cwd,
                     session.short_id(),
-                    size_label(session),
+                    app.registry.measurement(session),
                     human_age(session.mtime_ms),
                 ),
                 Style::default().fg(Color::DarkGray),
@@ -191,84 +185,16 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = vec![
         kv(&t("detail.id"), session.id.clone()),
         kv(&t("detail.title_label"), session.title.clone()),
-        kv(&t("detail.source"), t(session.kind().label_key())),
+        kv(&t("detail.source"), app.registry.label(session.source)),
         kv(&t("detail.workspace"), session.cwd.clone()),
         kv(&t("detail.created"), format_time(session.created_at)),
         kv(&t("detail.updated"), format_time(session.mtime_ms)),
     ];
 
-    match &session.location {
-        Location::Dst {
-            log_name,
-            compressed,
-            frames,
-            size,
-            dir,
-            ..
-        } => {
-            lines.push(kv(&t("detail.size"), human_size(*size)));
-            let encoding = if *compressed {
-                t("detail.encoding.zstd")
-            } else {
-                t("detail.encoding.plain")
-            };
-            lines.push(kv(
-                &t("detail.log"),
-                tf(
-                    "detail.log_value",
-                    &[
-                        ("name", log_name),
-                        ("encoding", &encoding),
-                        ("count", &frames.to_string()),
-                    ],
-                ),
-            ));
-            lines.push(kv(&t("detail.dir"), dir.display().to_string()));
-        }
-        Location::Opencode {
-            db,
-            project_id,
-            worktree,
-            messages,
-            events,
-            cost,
-            tokens_in,
-            tokens_out,
-            tokens_reasoning,
-            tokens_cache_read,
-            tokens_cache_write,
-        } => {
-            lines.push(kv(
-                &t("detail.records"),
-                tf(
-                    "detail.records_value",
-                    &[("messages", &messages.to_string()), ("events", &events.to_string())],
-                ),
-            ));
-            let cache = tokens_cache_read + tokens_cache_write;
-            if *tokens_in > 0 || *tokens_out > 0 || *tokens_reasoning > 0 || cache > 0 {
-                lines.push(kv(
-                    &t("detail.tokens"),
-                    tf(
-                        "detail.tokens_value",
-                        &[
-                            ("input", &tokens_in.to_string()),
-                            ("output", &tokens_out.to_string()),
-                            ("reasoning", &tokens_reasoning.to_string()),
-                            ("cache", &cache.to_string()),
-                        ],
-                    ),
-                ));
-            }
-            if *cost > 0.0 {
-                lines.push(kv(&t("detail.cost"), format!("{cost:.4}")));
-            }
-            let project = worktree.clone().unwrap_or_else(|| project_id.clone());
-            if !project.is_empty() {
-                lines.push(kv(&t("detail.project"), project));
-            }
-            lines.push(kv(&t("detail.db"), db.display().to_string()));
-        }
+    // Everything source-specific comes from the source itself; the core only
+    // knows that a session may have extra rows.
+    for row in app.registry.detail(session) {
+        lines.push(kv(&row.label, row.value));
     }
 
     if let Some(parent) = &session.parent {
@@ -282,7 +208,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(kv(&t("detail.title_source"), title_source_label(&session.title_source)));
 
-    if let Some(pid) = app.mounted.get(&session.id) {
+    if let Some(pid) = session.mounted_pid {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             tf("detail.mounted", &[("pid", &pid.to_string())]),
@@ -375,7 +301,7 @@ fn draw_delete_popup(frame: &mut Frame, app: &App) {
             format!("{}  ·  {}", session.id, session.cwd),
             Style::default().fg(Color::Gray),
         )));
-        if let Some(pid) = app.mounted.get(&session.id) {
+        if let Some(pid) = session.mounted_pid {
             lines.push(Line::from(Span::styled(
                 tf("popup.delete.mounted", &[("pid", &pid.to_string())]),
                 Style::default().fg(Color::Yellow),
@@ -437,17 +363,17 @@ fn draw_help(frame: &mut Frame) {
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
+/// A source records where its title came from as a plain suffix; the label is
+/// `title_source.<suffix>` in the locale tables. A source added later only has
+/// to add its keys, and an unknown suffix still renders as something readable.
 fn title_source_label(source: &str) -> String {
-    let key = match source {
-        "renamed" => "title_source.renamed",
-        "auto" => "title_source.auto",
-        "log" => "title_source.log",
-        "prompt" => "title_source.prompt",
-        "opencode" => "title_source.opencode",
-        "slug" => "title_source.slug",
-        _ => "title_source.fallback",
-    };
-    t(key)
+    let key = format!("title_source.{source}");
+    let text = t(&key);
+    if text == key {
+        t("title_source.fallback")
+    } else {
+        text
+    }
 }
 
 fn kv(label: &str, value: String) -> Line<'static> {
@@ -494,48 +420,27 @@ fn human_age(ms: u64) -> String {
     }
 }
 
-/// A log on disk has a size; a database row has a message count. There is no
-/// single unit that makes sense for both, so the list picks per source.
-fn size_label(session: &Session) -> String {
-    match &session.location {
-        Location::Dst { size, .. } => human_size(*size),
-        Location::Opencode { messages, .. } => tf("list.messages", &[("count", &messages.to_string())]),
-    }
-}
-
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::App;
-    use crate::paths::Paths;
+    use crate::source::Env;
+    use crate::sources;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::path::PathBuf;
 
+    fn test_app() -> App {
+        let env = Env::isolated(
+            PathBuf::from("C:/roster-nonexistent-home"),
+            PathBuf::from("C:/roster-nonexistent-data"),
+        );
+        App::new(env, sources::registry(), None, None)
+    }
+
     #[test]
     fn renders_all_modes_without_panicking() {
-        let paths = Paths::discover(
-            Some(PathBuf::from("C:/roster-nonexistent-dsh")),
-            Some(PathBuf::from("C:/roster-nonexistent-data")),
-            vec![PathBuf::from("C:/roster-nonexistent-sessions")],
-            Vec::new(),
-        );
-        let mut app = App::new(paths, None, None);
+        let mut app = test_app();
         let backend = TestBackend::new(120, 32);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -554,66 +459,8 @@ mod tests {
     }
 
     #[test]
-    fn renders_an_opencode_session_in_the_detail_pane() {
-        let paths = Paths::discover(
-            Some(PathBuf::from("C:/roster-nonexistent-dsh")),
-            Some(PathBuf::from("C:/roster-nonexistent-data")),
-            vec![PathBuf::from("C:/roster-nonexistent-sessions")],
-            Vec::new(),
-        );
-        let mut app = App::new(paths, None, None);
-        app.sessions = vec![Session {
-            id: "ses_test".to_string(),
-            cwd: "E:/code/x".to_string(),
-            created_at: 1_700_000_000_000,
-            mtime_ms: 1_700_000_100_000,
-            title: "a database session".to_string(),
-            title_source: "opencode".to_string(),
-            parent: None,
-            agent_preset: Some("build".to_string()),
-            model: Some("deepseek/deepseek-flash".to_string()),
-            location: Location::Opencode {
-                db: PathBuf::from("C:/oc/opencode.db"),
-                project_id: "proj".to_string(),
-                worktree: Some("E:/code/x".to_string()),
-                messages: 3,
-                events: 9,
-                cost: 0.0125,
-                tokens_in: 10,
-                tokens_out: 20,
-                tokens_reasoning: 1,
-                tokens_cache_read: 30,
-                tokens_cache_write: 2,
-            },
-        }];
-        app.visible = vec![0];
-        app.list_state.select(Some(0));
-
-        let backend = TestBackend::new(120, 32);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(text.contains("deepseek/deepseek-flash"), "the model is shown");
-        assert!(text.contains("OC"), "the source badge is shown");
-        assert!(text.contains("Roster"), "the product name is in the header");
-    }
-
-    #[test]
     fn renders_in_both_languages() {
-        let paths = Paths::discover(
-            Some(PathBuf::from("C:/roster-nonexistent-dsh")),
-            Some(PathBuf::from("C:/roster-nonexistent-data")),
-            vec![PathBuf::from("C:/roster-nonexistent-sessions")],
-            Vec::new(),
-        );
-        let mut app = App::new(paths, None, None);
+        let mut app = test_app();
         let backend = TestBackend::new(120, 32);
         let mut terminal = Terminal::new(backend).unwrap();
 

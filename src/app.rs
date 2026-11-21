@@ -1,13 +1,10 @@
-use std::collections::HashMap;
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use crate::i18n;
-use crate::mutate;
-use crate::paths::Paths;
+use crate::session::Session;
 use crate::settings;
-use crate::store::{self, Kind, Session};
+use crate::source::{Env, Registry};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -20,7 +17,8 @@ pub enum Mode {
 }
 
 pub struct App {
-    pub paths: Paths,
+    pub env: Env,
+    pub registry: Registry,
     pub sessions: Vec<Session>,
     pub visible: Vec<usize>,
     pub selected: usize,
@@ -32,18 +30,25 @@ pub struct App {
     filter_backup: String,
     pub status: String,
     pub status_error: bool,
-    pub mounted: HashMap<String, u32>,
     pub errors: Vec<String>,
+    /// Where every source looked, resolved on reload (language-independent).
+    pub locations: Vec<String>,
     pub language_choice: Option<i18n::Language>,
-    /// Which source to show; `None` shows every one.
-    pub source: Option<Kind>,
+    /// Id of the source to show; `None` shows every one.
+    pub source: Option<&'static str>,
     pub quit: bool,
 }
 
 impl App {
-    pub fn new(paths: Paths, language_choice: Option<i18n::Language>, source: Option<Kind>) -> Self {
+    pub fn new(
+        env: Env,
+        registry: Registry,
+        language_choice: Option<i18n::Language>,
+        source: Option<&'static str>,
+    ) -> Self {
         let mut app = Self {
-            paths,
+            env,
+            registry,
             sessions: Vec::new(),
             visible: Vec::new(),
             selected: 0,
@@ -55,8 +60,8 @@ impl App {
             filter_backup: String::new(),
             status: String::new(),
             status_error: false,
-            mounted: HashMap::new(),
             errors: Vec::new(),
+            locations: Vec::new(),
             language_choice,
             source,
             quit: false,
@@ -65,28 +70,30 @@ impl App {
         app
     }
 
-    /// How many sessions of each source were loaded, filter or not.
-    pub fn source_counts(&self) -> (usize, usize) {
-        self.sessions
-            .iter()
-            .fold((0, 0), |(dst, opencode), session| match session.kind() {
-                Kind::Dst => (dst + 1, opencode),
-                Kind::Opencode => (dst, opencode + 1),
-            })
+    /// How many sessions each registered source produced, in registry order.
+    pub fn source_counts(&self) -> Vec<(&'static str, usize)> {
+        let mut counts: Vec<(&'static str, usize)> =
+            self.registry.sources().iter().map(|source| (source.id(), 0)).collect();
+        for session in &self.sessions {
+            if let Some(entry) = counts.iter_mut().find(|(id, _)| *id == session.source) {
+                entry.1 += 1;
+            }
+        }
+        counts
     }
 
     pub fn source_label(&self) -> String {
         match self.source {
             None => i18n::t("source.all"),
-            Some(kind) => i18n::t(kind.badge_key()),
+            Some(id) => self.registry.label(id),
         }
     }
 
     pub fn reload(&mut self, keep_id: Option<String>) {
-        let result = store::load(&self.paths);
+        let result = self.registry.load(&self.env);
         self.sessions = result.sessions;
         self.errors = result.errors;
-        self.mounted = result.mounted;
+        self.locations = self.registry.locations(&self.env);
         self.rebuild_visible();
         if let Some(id) = keep_id {
             self.select_id(&id);
@@ -109,7 +116,7 @@ impl App {
             .sessions
             .iter()
             .enumerate()
-            .filter(|(_, session)| self.source.is_none_or(|kind| kind == session.kind()))
+            .filter(|(_, session)| self.source.is_none_or(|id| id == session.source))
             .filter(|(_, session)| {
                 needle.is_empty()
                     || session.title.to_lowercase().contains(&needle)
@@ -388,7 +395,7 @@ impl App {
                 let Some(session) = self.current().cloned() else {
                     return;
                 };
-                match mutate::rename(&self.paths, &session, &value) {
+                match self.registry.rename(&self.env, &session, &value) {
                     Ok(()) => {
                         let id = session.id.clone();
                         let title = value.trim().to_string();
@@ -402,7 +409,7 @@ impl App {
                 let Some(session) = self.current().cloned() else {
                     return;
                 };
-                match mutate::change_workspace(&self.paths, &session, &value) {
+                match self.registry.change_workspace(&self.env, &session, &value) {
                     Ok(new_cwd) => {
                         let id = session.id.clone();
                         self.reload(Some(id));
@@ -415,13 +422,17 @@ impl App {
         }
     }
 
-    /// all → dst → opencode → all.
+    /// all → first source → … → last source → all.
     fn cycle_source(&mut self) {
-        self.source = match self.source {
-            None => Some(Kind::Dst),
-            Some(Kind::Dst) => Some(Kind::Opencode),
-            Some(Kind::Opencode) => None,
+        let ids: Vec<&'static str> = self.registry.ids().collect();
+        let next = match self.source {
+            None => ids.first().copied(),
+            Some(current) => {
+                let position = ids.iter().position(|id| *id == current).unwrap_or(0);
+                ids.get(position + 1).copied()
+            }
         };
+        self.source = next;
         self.rebuild_visible();
         let label = self.source_label();
         self.set_info(i18n::tf("msg.source", &[("label", &label)]));
@@ -440,7 +451,7 @@ impl App {
         };
         let active = next.unwrap_or_else(i18n::Language::detect);
         i18n::set(active);
-        let _ = settings::save_choice(&self.paths.data_dir, next);
+        let _ = settings::save_choice(&self.env.data_dir, next);
         self.language_choice = next;
 
         let label = active.label().to_string();
@@ -460,7 +471,7 @@ impl App {
                     return;
                 };
                 self.mode = Mode::Normal;
-                match mutate::delete(&self.paths, &session) {
+                match self.registry.delete(&self.env, &session) {
                     Ok(()) => {
                         let title = session.display_title();
                         self.reload(None);
