@@ -450,13 +450,45 @@ fn path_eq(a: &str, b: &str) -> bool {
     normalize_cmp(a) == normalize_cmp(b)
 }
 
+/// Comparison key for workspace paths. Windows treats both separators as path
+/// separators and ignores case; on Unix a backslash is a normal file-name
+/// character and case matters.
 fn normalize_cmp(path: &str) -> String {
-    let mut value = path.replace('/', "\\");
-    while value.len() > 3 && value.ends_with('\\') {
+    let mut value = if cfg!(windows) {
+        path.replace('/', "\\")
+    } else {
+        path.to_string()
+    };
+    let separator = if cfg!(windows) { '\\' } else { '/' };
+    let root_len = if cfg!(windows) { 3 } else { 1 };
+    while value.len() > root_len && value.ends_with(separator) {
         value.pop();
     }
     if cfg!(windows) {
         value.make_ascii_lowercase();
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_paths_compare_with_the_platform_rules() {
+        #[cfg(windows)]
+        {
+            assert!(path_eq(r"E:\code\x\", "E:/code/x"));
+            assert!(path_eq(r"E:\code\X", r"e:\code\x"));
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(path_eq("/code/x/", "/code/x"));
+            assert!(!path_eq("/code/X", "/code/x"), "Unix paths are case-sensitive");
+            assert!(
+                !path_eq(r"/code/x\y", "/code/x/y"),
+                "a backslash is a file-name character on Unix"
+            );
+        }
+    }
 }

@@ -203,7 +203,7 @@ $ roster --set-cwd <id> /abs/path
 ## 开发
 
 ```console
-$ cargo test          # 48 个测试
+$ cargo test          # 50 个测试
 $ cargo clippy --all-targets
 $ cargo fmt
 ```
