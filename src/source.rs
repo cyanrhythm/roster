@@ -271,14 +271,18 @@ pub fn env_path(key: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Keeps the first occurrence of each path, compared case-insensitively so a
-/// Windows drive letter cannot smuggle a duplicate through.
+/// Keeps the first occurrence of each path. Windows compares case-insensitively
+/// so a drive letter cannot smuggle a duplicate through; Unix paths stay
+/// case-sensitive because two directories may differ only by case.
 pub fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen: Vec<String> = Vec::new();
     paths
         .into_iter()
         .filter(|path| {
-            let key = path.display().to_string().to_lowercase();
+            let mut key = path.display().to_string();
+            if cfg!(windows) {
+                key = key.to_lowercase();
+            }
             if seen.contains(&key) {
                 false
             } else {
@@ -391,6 +395,21 @@ mod tests {
         assert_eq!(env.dirs_for("dst").len(), 2);
         assert_eq!(env.dirs_for("opencode"), [PathBuf::from("/oc")]);
         assert!(env.dirs_for("unknown").is_empty());
+    }
+
+    #[test]
+    fn path_deduplication_follows_the_platform_case_rules() {
+        assert_eq!(
+            dedupe_paths(vec![PathBuf::from("/data/sessions"), PathBuf::from("/data/sessions")]),
+            [PathBuf::from("/data/sessions")],
+            "an exact duplicate is always dropped"
+        );
+
+        let mixed_case = dedupe_paths(vec![PathBuf::from("/data/Sessions"), PathBuf::from("/data/sessions")]);
+        #[cfg(windows)]
+        assert_eq!(mixed_case.len(), 1, "Windows paths are case-insensitive");
+        #[cfg(not(windows))]
+        assert_eq!(mixed_case.len(), 2, "Unix paths are case-sensitive");
     }
 
     #[test]
