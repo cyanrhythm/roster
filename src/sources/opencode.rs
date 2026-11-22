@@ -635,10 +635,17 @@ fn relative_path(worktree: Option<&str>, directory: &str) -> String {
         .unwrap_or_default()
 }
 
-/// opencode writes forward slashes on every platform.
+/// opencode writes forward slashes on every platform. On Windows a pasted path
+/// may carry backslashes, which are separators there; on Unix a backslash is
+/// part of the file name and must survive.
 fn slash_path(path: &str) -> String {
-    let mut value = path.replace('\\', "/");
-    while value.len() > 3 && value.ends_with('/') {
+    let mut value = if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.to_string()
+    };
+    let root_len = if cfg!(windows) { 3 } else { 1 };
+    while value.len() > root_len && value.ends_with('/') {
         value.pop();
     }
     value
@@ -926,8 +933,15 @@ mod tests {
 
     #[test]
     fn paths_are_compared_the_way_opencode_writes_them() {
-        // Every platform stores forward slashes, whatever the input used.
+        // On Windows a pasted path may use backslashes; on Unix they are
+        // ordinary characters and must survive.
+        #[cfg(windows)]
         assert_eq!(slash_path(r"E:\code\New\"), "E:/code/New");
+        #[cfg(not(windows))]
+        assert_eq!(slash_path("/code/New/"), "/code/New");
+        #[cfg(not(windows))]
+        assert_eq!(slash_path(r"/code/New\dir"), r"/code/New\dir");
+
         // Windows compares case-insensitively; Unix does not.
         #[cfg(windows)]
         assert_eq!(path_key(r"E:\code\New\"), path_key("e:/code/new"));
