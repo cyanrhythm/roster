@@ -662,12 +662,21 @@ mod tests {
 
     use crate::source::Env;
 
+    /// opencode stores forward slashes on every platform; the drive letter is
+    /// only there where it makes the path absolute.
+    fn workspace(name: &str) -> String {
+        if cfg!(windows) {
+            format!("E:/code/{name}")
+        } else {
+            format!("/code/{name}")
+        }
+    }
+
     fn fixture(dir: &Path) -> PathBuf {
         fs::create_dir_all(dir).unwrap();
         let db = dir.join(DB_NAME);
         let conn = Connection::open(&db).unwrap();
-        conn.execute_batch(
-            r#"
+        let sql = r#"
             CREATE TABLE project (
                 id text PRIMARY KEY, worktree text NOT NULL, vcs text, name text,
                 time_created integer NOT NULL, time_updated integer NOT NULL
@@ -703,21 +712,24 @@ mod tests {
                 id text PRIMARY KEY, aggregate_id text NOT NULL, seq integer NOT NULL,
                 type text NOT NULL, data text NOT NULL
             );
-            INSERT INTO project VALUES ('proj-old', 'E:/code/old', 'git', NULL, 1, 1);
-            INSERT INTO project VALUES ('proj-new', 'E:/code/new', 'git', NULL, 1, 1);
+            INSERT INTO project VALUES ('proj-old', '__OLD__', 'git', NULL, 1, 1);
+            INSERT INTO project VALUES ('proj-new', '__NEW__', 'git', NULL, 1, 1);
             INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated, path, agent, model)
-            VALUES ('ses_one', 'proj-old', 'calm-circuit', 'E:/code/old', 'first title', '1.0.0', 1000, 2000, '', 'build',
+            VALUES ('ses_one', 'proj-old', 'calm-circuit', '__OLD__', 'first title', '1.0.0', 1000, 2000, '', 'build',
                     '{"providerID":"deepseek","id":"deepseek-flash"}');
             INSERT INTO message VALUES ('msg_1', 'ses_one', 1, 1, '{"role":"user"}');
             INSERT INTO message VALUES ('msg_2', 'ses_one', 2, 2, '{"role":"assistant"}');
             INSERT INTO part VALUES ('prt_1', 'msg_1', 'ses_one', 1, 1, '{"text":"hi"}');
             INSERT INTO event_sequence VALUES ('ses_one', 2, NULL);
             INSERT INTO event VALUES ('evt_1', 'ses_one', 0, 'session.created.1',
-                '{"sessionID":"ses_one","info":{"id":"ses_one","title":"first title","time":{"created":1000,"updated":2000},"directory":"E:/code/old","projectID":"proj-old"}}');
+                '{"sessionID":"ses_one","info":{"id":"ses_one","title":"first title","time":{"created":1000,"updated":2000},"directory":"__OLD__","projectID":"proj-old"}}');
             INSERT INTO event VALUES ('evt_2', 'ses_one', 1, 'message.updated.1', '{"x":1}');
             INSERT INTO event VALUES ('evt_3', 'ses_one', 2, 'session.updated.1',
-                '{"sessionID":"ses_one","info":{"id":"ses_one","title":"first title","time":{"created":1000,"updated":2000},"directory":"E:/code/old","projectID":"proj-old"}}');
-            "#,
+                '{"sessionID":"ses_one","info":{"id":"ses_one","title":"first title","time":{"created":1000,"updated":2000},"directory":"__OLD__","projectID":"proj-old"}}');
+            "#;
+        conn.execute_batch(
+            &sql.replace("__OLD__", &workspace("old"))
+                .replace("__NEW__", &workspace("new")),
         )
         .unwrap();
         db
@@ -748,13 +760,14 @@ mod tests {
 
         assert_eq!(session.id, "ses_one");
         assert_eq!(session.title, "first title");
-        assert_eq!(session.cwd, "E:/code/old");
+        let old = workspace("old");
+        assert_eq!(session.cwd, old);
         assert_eq!(session.model.as_deref(), Some("deepseek/deepseek-flash"));
         assert_eq!(session.agent_preset.as_deref(), Some("build"));
         let data = session.data::<OpencodeData>().unwrap();
         assert_eq!(data.messages, 2);
         assert_eq!(data.events, 3);
-        assert_eq!(data.worktree.as_deref(), Some("E:/code/old"));
+        assert_eq!(data.worktree.as_deref(), Some(old.as_str()));
         assert_eq!(data.db, db);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -798,7 +811,7 @@ mod tests {
         assert_eq!(kind, "session.updated.1");
         let value: Value = serde_json::from_str(&data).unwrap();
         assert_eq!(value["info"]["title"], "renamed");
-        assert_eq!(value["info"]["directory"], "E:/code/old", "untouched fields survive");
+        assert_eq!(value["info"]["directory"], workspace("old"), "untouched fields survive");
 
         let stored: i64 = conn
             .query_row(
@@ -817,8 +830,17 @@ mod tests {
         let db = fixture(&dir);
         let session = one(&db);
 
-        let moved = change_workspace(&session, r"E:\code\new\sub").unwrap();
-        assert_eq!(moved, "E:/code/new/sub");
+        let target = workspace("new");
+        let expected = format!("{target}/sub");
+        // A pasted Windows path arrives with backslashes; on Unix the same
+        // directory arrives with the separator the platform uses.
+        let input = if cfg!(windows) {
+            format!(r"{}\sub", target.replace('/', "\\"))
+        } else {
+            expected.clone()
+        };
+        let moved = change_workspace(&session, &input).unwrap();
+        assert_eq!(moved, expected);
 
         let conn = Connection::open(&db).unwrap();
         let (directory, project, path): (String, String, Option<String>) = conn
@@ -828,7 +850,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(directory, "E:/code/new/sub");
+        assert_eq!(directory, expected);
         assert_eq!(project, "proj-new");
         assert_eq!(path.as_deref(), Some("sub"));
 
@@ -840,7 +862,7 @@ mod tests {
             )
             .unwrap();
         let value: Value = serde_json::from_str(&data).unwrap();
-        assert_eq!(value["info"]["directory"], "E:/code/new/sub");
+        assert_eq!(value["info"]["directory"], expected);
         assert_eq!(value["info"]["projectID"], "proj-new");
         assert_eq!(value["info"]["path"], "sub");
         let _ = fs::remove_dir_all(&dir);
@@ -904,9 +926,17 @@ mod tests {
 
     #[test]
     fn paths_are_compared_the_way_opencode_writes_them() {
+        // Every platform stores forward slashes, whatever the input used.
+        assert_eq!(slash_path(r"E:\code\New\"), "E:/code/New");
+        // Windows compares case-insensitively; Unix does not.
+        #[cfg(windows)]
         assert_eq!(path_key(r"E:\code\New\"), path_key("e:/code/new"));
-        assert_eq!(relative_path(Some("E:/code/new"), "E:/code/new/sub"), "sub");
-        assert_eq!(relative_path(Some("E:/code/new"), "E:/code/new"), "");
-        assert_eq!(relative_path(Some("E:/code/new"), "E:/elsewhere"), "");
+        #[cfg(not(windows))]
+        assert_ne!(path_key("/code/New"), path_key("/code/new"));
+
+        let base = workspace("new");
+        assert_eq!(relative_path(Some(&base), &format!("{base}/sub")), "sub");
+        assert_eq!(relative_path(Some(&base), &base), "");
+        assert_eq!(relative_path(Some(&base), &workspace("elsewhere")), "");
     }
 }

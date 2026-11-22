@@ -229,7 +229,7 @@ $ cargo fmt
 
 ## 已知限制
 
-- 只在 Windows 上验证过；Unix 分支已实现但未实测。
+- Unix 分支已实现，测试与 clippy 在 Linux 上通过；真实 dsh-tui / opencode 数据尚未在 Unix 上实测，CI 也只在 Windows 上跑。
 - opencode 只支持已经迁移到 SQLite 的版本（1.x）。更早的 `storage/session/**/*.json` 布局没做支持。
 - opencode 的 `part` 表很大（几百 MB 的库并不罕见），所以列表不统计字节数，只显示消息/事件数量。
 - 改工作区时如果新目录不属于任何已知项目，会话仍挂在原项目下（不会伪造 project）。
